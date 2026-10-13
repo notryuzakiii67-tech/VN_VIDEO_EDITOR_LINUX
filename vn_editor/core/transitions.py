@@ -194,16 +194,21 @@ def build(key: str, offset: float, duration: float, a: str, b: str,
     name = spec.custom
 
     if name in ("dip_black", "dip_white", "flash"):
+        # The outgoing clip dips over the first half of the transition and the
+        # incoming clip comes back over the second half.  Both branches are
+        # trimmed to exactly the length they contribute: the incoming clip
+        # resumes at half the transition, which is where its own timeline
+        # already is, so the run keeps its length and no footage is lost.
         color = {"dip_black": "black", "dip_white": "white",
                  "flash": "white"}[name]
         half = d / 2.0
-        a1, b1, a2, b2 = counter(), counter(), counter(), counter()
+        a1, b1 = counter(), counter()
         return (
-            f"[{a}]fade=t=out:st={num(off, 4)}:d={num(half, 4)}:color={color}[{a1}];"
-            f"[{b}]fade=t=in:st=0:d={num(half, 4)}:color={color}[{b1}];"
-            f"[{a1}]setpts=PTS-STARTPTS[{a2}];"
-            f"[{b1}]setpts=PTS-STARTPTS+{num(d, 4)}/TB[{b2}];"
-            f"[{a2}][{b2}]concat=n=2:v=1:a=0[{out}]")
+            f"[{a}]trim=duration={num(off + half, 4)},"
+            f"fade=t=out:st={num(off, 4)}:d={num(half, 4)}:color={color}[{a1}];"
+            f"[{b}]trim=start={num(half, 4)},setpts=PTS-STARTPTS,"
+            f"fade=t=in:st=0:d={num(half, 4)}:color={color}[{b1}];"
+            f"[{a1}][{b1}]concat=n=2:v=1:a=0[{out}]")
 
     if name in ("spin_dissolve", "spin_reverse"):
         sign = -1.0 if name == "spin_reverse" else 1.0

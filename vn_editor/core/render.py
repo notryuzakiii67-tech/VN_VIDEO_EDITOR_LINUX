@@ -413,7 +413,8 @@ class GraphBuilder:
 
     # -- transform compilation --------------------------------------------- #
     def build_transform(self, clip: Clip, src_label: str,
-                        mask: bool = True) -> Tuple[Optional[str], int]:
+                        mask: bool = True,
+                        keep: float = 0.0) -> Tuple[Optional[str], int]:
         """Append the transform fragments; return (output label, stage factor).
 
         Returns ``None`` as the label when the caller must composite the layer
@@ -508,7 +509,7 @@ class GraphBuilder:
             chain.append("format=rgba")
             out = self.labels()
             self.frag(f"[{src_label}]" + ",".join(chain) + f"[{out}]")
-            return out, q
+            return self._hold_to_canvas(out, clip.duration + keep), q
 
         # -- static / position-animated: content then overlay -------------- #
         content = self.labels()
@@ -517,16 +518,49 @@ class GraphBuilder:
 
         cw, chh = self._current_w(dw, dh, mode), self._current_h(dw, dh, mode)
         canvas = self.labels()
+        # The canvas outlives the clip on purpose: at the end of the clip the
+        # last frame is repeated (``eof_action=repeat``), which is what feeds a
+        # transition its handle.  ``_hold_to_canvas`` trims the extra frames
+        # off again, so the layer is exactly ``clip.duration + keep`` long.
         self.frag(f"color=c=black@0.0:s={self.ow}x{self.oh}:r={_fmt(self.fps)}:"
-                  f"d={_fmt(clip.duration + 0.6)},format=rgba[{canvas}]")
+                  f"d={_fmt(clip.duration + keep + 0.6)},format=rgba[{canvas}]")
         x_expr = (f"({kf_expr(x_keys, t.x, 't')})*{self.ow}-w/2" if x_keys
                   else _fmt(t.x * self.ow - cw / 2.0))
         y_expr = (f"({kf_expr(y_keys, t.y, 't')})*{self.oh}-h/2" if y_keys
                   else _fmt(t.y * self.oh - chh / 2.0))
-        out = self.labels()
+        merged = self.labels()
         self.frag(f"[{canvas}][{content}]overlay=x='{x_expr}':y='{y_expr}':"
-                  f"format=auto:eof_action=pass[{out}]")
-        return out, 1
+                  f"format=auto:eof_action=repeat[{merged}]")
+        # The canvas is deliberately longer than the clip so a late or
+        # out-of-frame layer never gets cut short, but ``eof_action=pass``
+        # pads the result with the canvas' transparent tail.  Every layer has
+        # to be exactly as long as its clip: ``concat``/``xfade`` lay the run
+        # end to end, so a padded layer pushes every following clip later
+        # (the start of the next clip shows up as bare background).
+        return self._hold_to_canvas(merged, clip.duration + keep,
+                                    canvas=canvas), 1
+
+    def _hold_to_canvas(self, label: str, total: float,
+                        canvas: str = "") -> str:
+        """Trim a layer to ``total`` seconds, free of canvas padding.
+
+        The layer streams carry a longer canvas than the clip so the last
+        frame can be repeated for a transition handle; every following stage
+        (``concat``, ``xfade``, the accumulator overlay) needs the layer to be
+        exactly as long as the clip, so the surplus is cut here.
+        """
+        if not canvas:
+            canvas = self.labels()
+            self.frag(f"color=c=black@0.0:s={self.ow}x{self.oh}:"
+                      f"r={_fmt(self.fps)}:d={_fmt(total + 0.6)},"
+                      f"format=rgba[{canvas}]")
+            held = self.labels()
+            self.frag(f"[{canvas}][{label}]overlay=0:0:format=auto:"
+                      f"eof_action=repeat[{held}]")
+            label = held
+        out = self.labels()
+        self.frag(f"[{label}]trim=duration={_fmt(max(0.01, total))}[{out}]")
+        return out
 
     def _current_w(self, dw: float, dh: float, mode: str) -> int:
         return self.ow if mode in ("cover", "stretch") else _even(dw)
@@ -669,18 +703,12 @@ class GraphBuilder:
         self.frag(video_speed_graph(clip, cur, spd, self.labels, self.fps))
         cur = spd
 
-        if extend > 0.001 and not clip.freeze:
-            hl = self.labels()
-            self.frag(f"[{cur}]tpad=stop_mode=clone:stop_duration={_fmt(extend)},"
-                      f"trim=duration={_fmt(clip.duration + extend)}[{hl}]")
-            cur = hl
-        elif clip.freeze and extend > 0.001:
-            hl = self.labels()
-            self.frag(f"[{cur}]tpad=stop_mode=clone:stop_duration={_fmt(extend)},"
-                      f"trim=duration={_fmt(clip.duration + extend)}[{hl}]")
-            cur = hl
-
-        out, _ = self.build_transform(clip, cur)
+        # ``extend`` is the transition handle: the layer has to stay alive a
+        # little past its out-point.  ``tpad`` cannot do that job here — after
+        # a ``trim`` it silently emits nothing at all — so the handle is
+        # produced by the canvas overlay below, which repeats the last frame
+        # and is then trimmed back to the exact length.
+        out, _ = self.build_transform(clip, cur, keep=extend)
         return out
 
 

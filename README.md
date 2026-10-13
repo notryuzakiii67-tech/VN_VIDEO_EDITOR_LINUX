@@ -231,9 +231,13 @@ resolution, and the frame stills used while scrubbing come from the same code
 path. `tools/feature_audit.py` proves that shared code by rendering every
 catalogue entry — all 39 effects, 25 colour looks, 65 transitions, 24 text
 animations, 10 caption presets, 13 overlay blend modes, 38 stickers, 8 mask
-shapes, 8 speed curves, 42 sound effects — and measuring that the picture
-actually changes, so a control that renders but does nothing cannot pass
-unnoticed.  The audit refuses to run if its baseline frame is a flat colour,
+shapes, 8 speed curves, 12 easing curves, 5 export presets, 42 sound effects —
+and measuring that the picture or the audio actually changes, so a control that
+renders but does nothing cannot pass unnoticed.  A transition is judged against
+the very same project rendered as a plain cut, and has to keep the run's length
+so a transition never shifts the timeline; the audio group measures the level of
+the written file, so volume, mute and fades are proven audible rather than
+assumed.  The audit refuses to run if its baseline frame is a flat colour,
 i.e. if the test clip is not reaching the frame at all.  Tables the UI and the
 renderer share (blend modes, speed-curve presets, mask shapes, caption presets)
 live in the core so the two cannot drift apart. Filters, effects, masks and overlays are only listed in the UI
@@ -242,12 +246,21 @@ when this build of FFmpeg actually provides them.
 ## Tests
 
 ```bash
-python tests/test_render.py                  # 28 engine/render checks (~30 s)
-python tools/feature_audit.py                # renders every catalogue entry (~15 s)
+python tests/test_render.py                  # 29 engine/render checks (~35 s)
+python tools/feature_audit.py                # renders every catalogue entry (~35 s)
 python tools/export_check.py                 # full MP4 export + verification
 python tools/gui_smoke.py                    # 26 headless GUI checks + screenshots
 python -m vn_editor --self-test              # environment report
 ```
+
+Two things the suites guard that are easy to get wrong in an NLE renderer: a
+multi-clip run lays its clips out end to end with no gap and no clipped tail
+(the test renders two clips and checks that neither a hole at the join nor the
+end of the second clip shows the background), and a transition is drawn *over*
+the cut — the outgoing clip's last frame is held for the transition's duration
+while the incoming clip fades in — instead of silently collapsing into a hard
+cut.  Both of those were real bugs, found by these checks rather than by
+watching output, and both now have regression tests.
 
 On a desktop the GUI checks run directly. On a headless machine (no GL/X11/dbus
 at all, like a container) generate stub platform libraries first:

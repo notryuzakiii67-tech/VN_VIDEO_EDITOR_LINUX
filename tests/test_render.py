@@ -348,32 +348,99 @@ def t_opacity():
     check(res.ok, "opacity keyframes failed", res.error)
 
 
+@test("multi-clip run keeps its timeline")
+def t_multiclip():
+    """Two clips end to end: no gap, no clipped tail.
+
+    Every layer used to be padded with its transparent canvas, so ``concat``
+    laid the run out too long and the second clip only appeared late — as bare
+    background — with its tail cut off.
+    """
+    src = make_source("src_run.mp4", 640, 360, 4.0)
+    p = base_project()
+    a = add_asset(p, src)
+    add_video(p, a, 0.0, 1.5, src_in=0.0)
+    add_video(p, a, 1.5, 1.5, src_in=2.0)
+    res = render(p, "run.mp4")
+    if not check(res.ok, "multi-clip render failed", res.error):
+        return
+    ok, why = ok_output(TMP / "run.mp4", 2.9)
+    check(ok, f"multi-clip output wrong: {why}")
+    empty = base_project()
+    render(empty, "run_empty.mp4", audio=False)
+    bg = avg_rgb(frame_at(TMP / "run_empty.mp4", 0.5, "run_bg.png"))
+    for t in (0.2, 1.6, 1.9, 2.85):
+        f = avg_rgb(frame_at(TMP / "run.mp4", t, f"run_{int(t * 100)}.png"))
+        if f and bg:
+            d = sum(abs(x - y) for x, y in zip(f, bg))
+            check(d > 12,
+                  f"clip missing at t={t}s — the frame is the background",
+                  f"Δ={d:.1f} vs an empty project")
+
+
 @test("transitions")
 def t_transitions():
+    # Two clips that look nothing alike: a transition between two frames of the
+    # same source is nearly invisible at its midpoint, which would say nothing
+    # about whether the transition ran at all.
     src = make_source("src8.mp4", 640, 360, 6.0)
+    other = make_green_clip("src8b.mp4", 640, 360, 2.0)
     keys = ["fade", "wipeleft", "circleopen", "slideup", "dissolve",
             "pixelize", "diagtr", "spin_dissolve", "dip_black", "flash"]
-    for key in keys:
+
+    def build(key):
         p = base_project()
-        a = add_asset(p, src)
-        c1 = add_video(p, a, 0.0, 1.0)
-        c2 = add_video(p, a, 1.0, 1.0, src_in=2.0)
-        c1.transition_out = Transition(key, 0.45, "out")
+        a, b = add_asset(p, src), add_asset(p, other)
+        c1 = add_video(p, a, 0.0, 1.0, src_in=0.0)
+        c2 = add_video(p, b, 1.0, 1.0)
+        if key:
+            c1.transition_out = Transition(key, 0.45, "out")
+        return p
+
+    plain = TMP / "tr_none.mp4"
+    res = render(build(None), "tr_none.mp4")
+    check(res.ok, "plain two-clip render failed", res.error)
+    plain_dur = probe.probe(str(plain), use_cache=False).duration
+    empty = base_project()
+    render(empty, "tr_empty.mp4", audio=False)
+    bg = avg_rgb(frame_at(TMP / "tr_empty.mp4", 0.5, "tr_bg.png"))
+
+    for key in keys:
         out = TMP / f"tr_{key}.mp4"
-        res = render(p, f"tr_{key}.mp4")
-        if not res.ok:
-            check(False, f"transition '{key}' failed", res.error)
+        res = render(build(key), f"tr_{key}.mp4")
+        if not check(res.ok, f"transition '{key}' failed", res.error):
             continue
         good, why = ok_output(out, 1.9)
         check(good, f"transition '{key}': {why}")
-        if key == "fade":
-            mid = frame_at(out, 1.0, "tr_mid.png")
-            first = frame_at(out, 0.05, "tr_first.png")
-            if mid.exists() and first.exists():
-                m, f = avg_rgb(mid), avg_rgb(first)
-                if m and f:
-                    check(sum(abs(x - y) for x, y in zip(m, f)) > 1.0,
-                          "fade did not blend the two clips")
+        dur = probe.probe(str(out), use_cache=False).duration
+        check(abs(dur - plain_dur) < 0.15,
+              f"transition '{key}' moved the timeline",
+              f"{dur:.2f}s vs {plain_dur:.2f}s without a transition")
+        # A transition that silently degrades to a hard cut still renders, so
+        # compare frames from inside the transition with the same frames from
+        # the identical project without one.
+        best, mid_best = 0.0, None
+        for i in range(7):
+            t = 0.85 + i * 0.1
+            diff = frame_diff(frame_at(out, t, f"tt_{key}_{i}.png"),
+                              frame_at(plain, t, f"tp_{key}_{i}.png"))
+            if diff > best:
+                best, mid_best = diff, (t, diff)
+        check(best > 8.0, f"transition '{key}' rendered as a hard cut",
+              f"max Δ vs a plain cut = {best:.1f}")
+        if key in ("fade", "dissolve") and bg:
+            f = avg_rgb(frame_at(out, 1.2, f"tr_{key}_mid.png"))
+            if f:
+                d = sum(abs(x - y) for x, y in zip(f, bg))
+                check(d > 20, f"'{key}' faded through the background "
+                              "instead of mixing the clips", f"Δ={d:.1f}")
+        if key == "dip_black":
+            mid = avg_rgb(frame_at(out, 1.2, "tr_dip_mid.png"))
+            plain_mid = avg_rgb(frame_at(plain, 1.2, "tr_dip_plain.png"))
+            if mid and plain_mid:
+                check(sum(mid) < sum(plain_mid) * 0.6,
+                      "dip to black did not darken the frame",
+                      f"{sum(mid) / 3:.0f} vs {sum(plain_mid) / 3:.0f} per channel")
 
 
 @test("effects stack")

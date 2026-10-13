@@ -302,6 +302,21 @@ def audit_grades(tmp: Path, src: str) -> None:
 def audit_transitions(tmp: Path, src: str) -> None:
     from vn_editor.core import transitions as tr
     print(f"\ntransitions ({len(tr.TRANSITIONS)})")
+    # The second clip needs *different* footage: a transition between two
+    # identical frames is invisible at its midpoint, which would say nothing
+    # about whether the transition ran.
+    other = tmp / "audit_src2.mp4"
+    if not other.exists():
+        r = ff.ffmpeg("-y", "-v", "error", "-f", "lavfi", "-i",
+                      "smptehdbars=size=320x180:rate=15:duration=2",
+                      "-f", "lavfi", "-i", "sine=frequency=880:duration=2",
+                      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt",
+                      "yuv420p", "-c:a", "aac", "-shortest", str(other),
+                      timeout=120)
+        if not r.ok:
+            report("transition:fixture", False, "could not build second clip")
+            return
+
     for key in tr.TRANSITIONS:
         if key == "none":
             continue
@@ -311,6 +326,7 @@ def audit_transitions(tmp: Path, src: str) -> None:
         second = first.clone()
         second.id = Clip().id
         second.start = first.duration
+        second.path = str(other)
         p.add_clip(second, track)
         from vn_editor.core.model import Transition
         first.transition_out = Transition(key, 0.4, "out")
@@ -323,8 +339,372 @@ def audit_transitions(tmp: Path, src: str) -> None:
             report(f"transition:{key}", False, f"{type(exc).__name__}: {exc}")
             continue
         ok = result.ok and out.exists() and out.stat().st_size > 1000
-        report(f"transition:{key}", ok,
-               "" if ok else (result.error or "render failed")[-160:])
+        if not ok:
+            report(f"transition:{key}", False,
+                   (result.error or "render failed")[-160:])
+            continue
+        # A transition that silently falls back to a hard cut still renders, so
+        # compare a frame from inside the transition with the same frame from a
+        # clip that has no transition at all.
+        cut = tmp / f"tr_{key}_cut.mp4"
+        for clip in p.all_clips():
+            clip.transition_out = None
+            clip.transition_in = None
+        cut_opts = render_mod.options_from_settings(p)
+        cut_opts.width, cut_opts.height = 160, 90
+        cut_opts.audio = False
+        render_mod.render(p, str(cut), cut_opts)
+        # The transition is drawn over [clip A's out point, +duration] while
+        # the plain cut shows clip B throughout that window, so scan the window
+        # and take the biggest difference: that catches a transition which
+        # silently degraded to a hard cut without depending on one timestamp.
+        best = -1.0
+        for i in range(9):
+            t = first.duration - 0.1 + i * 0.1
+            a_frame = transition_frame(out, t, tmp, f"tr_{key}_{i}a.png")
+            b_frame = transition_frame(cut, t, tmp, f"tr_{key}_{i}b.png")
+            if a_frame and b_frame:
+                best = max(best, mean_diff(a_frame, b_frame))
+        report(f"transition:{key}", best > 1.0,
+               f"max Δ in the transition window = {best:.1f}"
+               if best >= 0 else "could not compare frames")
+        # A transition must not move the rest of the timeline: the run has to
+        # keep the same length as the plain cut.
+        here = probe_mod.probe(str(out), use_cache=False).duration
+        there = probe_mod.probe(str(cut), use_cache=False).duration
+        report(f"transition:{key} keeps the timeline",
+               abs(here - there) < 2.0 / 15.0 and here > 0,
+               f"{here:.3f}s vs {there:.3f}s without the transition")
+
+
+def transition_frame(video: Path, t: float, tmp: Path, name: str) -> str:
+    out = tmp / name
+    r = ff.ffmpeg("-y", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i",
+                  str(video), "-frames:v", "1", "-update", "1", str(out),
+                  timeout=60)
+    return str(out) if r.ok and out.exists() else ""
+
+
+def audit_easings(tmp: Path, src: str) -> None:
+    """Every easing has to bend the curve, and stay inside sane bounds."""
+    from vn_editor.core.model import EASINGS, Keyframe, eval_keyframes
+    print(f"\neasings ({len(EASINGS)})")
+    keys = [Keyframe(t=0.0, value=0.0, easing="linear"),
+            Keyframe(t=1.0, value=1.0, easing="linear")]
+    for name in EASINGS:
+        keys[1].easing = name
+        try:
+            quarter = eval_keyframes(keys, 0.25, 0.0)
+            half = eval_keyframes(keys, 0.5, 0.0)
+            end = eval_keyframes(keys, 1.0, 0.0)
+            start = eval_keyframes(keys, 0.0, 0.0)
+        except Exception as exc:                   # noqa: BLE001
+            report(f"easing:{name}", False, f"{type(exc).__name__}: {exc}")
+            continue
+        if name == "linear":
+            ok = abs(half - 0.5) < 0.02 and abs(quarter - 0.25) < 0.02
+        elif name == "hold":
+            ok = abs(half - 0.0) < 0.02
+        else:
+            ok = abs(half - 0.5) > 0.02 or abs(quarter - 0.25) > 0.02
+        detail = f"t=0.25→{quarter:.3f} 0.5→{half:.3f}"
+        report(f"easing:{name}", ok and abs(start) < 1e-6 and abs(end - 1.0) < 1e-6,
+               detail)
+
+
+def audit_text_style(tmp: Path, src: str) -> None:
+    """Outline, shadow, background and alignment each have to show up."""
+    from vn_editor.core.model import TextProps
+    print("\ntext styling")
+    base_text = TextProps(text="STYLE", font="Bebas Neue", size=90.0,
+                          color="#ffffff")
+    variants = [
+        ("outline", TextProps(**{**base_text.to_dict(),
+                                 "outline_width": 8.0,
+                                 "outline_color": "#ff0044"})),
+        ("shadow", TextProps(**{**base_text.to_dict(),
+                                "shadow": 8.0, "shadow_color": "#00ff00"})),
+        ("background", TextProps(**{**base_text.to_dict(),
+                                    "bg_enabled": True,
+                                    "bg_color": "#0000ff",
+                                    "bg_opacity": 1.0})),
+        ("alignment", TextProps(**{**base_text.to_dict(), "align": "left"})),
+        ("letter spacing", TextProps(**{**base_text.to_dict(),
+                                        "letter_spacing": 18.0})),
+    ]
+    plain = tmp / "style_plain.png"
+    p = base_project(src)
+    tt = p.ensure_track_for("text")
+    c = Clip(kind="text", track_id=tt.id, start=0.0, duration=1.5)
+    c.text = base_text
+    p.add_clip(c, tt)
+    ok, detail = render_ok(p, tmp, "style_plain", at=0.6)
+    if not ok:
+        report("text:plain", False, detail)
+        return
+    for name, props in variants:
+        p = base_project(src)
+        tt = p.ensure_track_for("text")
+        c = Clip(kind="text", track_id=tt.id, start=0.0, duration=1.5)
+        c.text = props
+        p.add_clip(c, tt)
+        ok, frame = render_ok(p, tmp, f"style_{abs(hash(name)) % 9999}", at=0.6)
+        if not ok:
+            report(f"text:{name}", False, frame)
+            continue
+        diff = mean_diff(detail, frame)
+        report(f"text:{name}", diff > 0.5, f"Δ={diff:.1f}")
+
+
+def audit_audio_levels(tmp: Path, src: str) -> None:
+    """Volume, mute and fades have to be audible in the exported file."""
+    from vn_editor.core.model import AudioProps
+    print("\naudio controls")
+    sound = tmp / "tone.wav"
+    if not sound.exists():
+        ff.ffmpeg("-y", "-v", "error", "-f", "lavfi", "-i",
+                  "sine=frequency=440:duration=1.6", str(sound), timeout=60)
+
+    def export(tag: str, props) -> Optional[float]:
+        p = Project.create_default("audio", 160, 90, 15.0)
+        asset = MediaAsset.from_info(probe_mod.probe(str(sound),
+                                                     use_cache=False), str(sound))
+        p.assets.append(asset)
+        track = p.ensure_track_for("audio")
+        clip = Clip(kind="audio", track_id=track.id, start=0.0, duration=1.5)
+        clip.path = str(sound)
+        clip.asset_id = asset.id
+        clip.audio = props
+        p.add_clip(clip, track)
+        opts = render_mod.options_from_settings(p)
+        opts.width, opts.height = 160, 90
+        opts.audio = True
+        out = tmp / f"audio_{tag}.mp4"
+        result = render_mod.render(p, str(out), opts)
+        if not result.ok:
+            return None
+        return measure_level(out)
+
+    def measure_level(path: Path, start: float = 0.0,
+                      span: float = 0.0) -> Optional[float]:
+        args = ["-v", "info", "-ss", f"{start:.3f}"]
+        if span:
+            args += ["-t", f"{span:.3f}"]
+        args += ["-i", str(path), "-af", "volumedetect", "-f", "null", "-"]
+        r = ff.ffmpeg(*args, timeout=120)
+        text = (r.stderr or "")
+        for line in text.splitlines():
+            if "mean_volume" in line:
+                try:
+                    return float(line.split("mean_volume:")[1].split("dB")[0])
+                except (IndexError, ValueError):
+                    return None
+        return None
+
+    full = export("full", AudioProps(volume=1.0))
+    muted = export("mute", AudioProps(volume=1.0, muted=True))
+    quiet = export("quiet", AudioProps(volume=0.15))
+    report("audio:normal level", full is not None and full > -40.0,
+           f"mean {full:.1f} dB" if full is not None else "no audio stream")
+    # A muted clip is dropped from the mix, so a project whose only audio clip
+    # is muted exports without an audio stream at all — that is silence too.
+    report("audio:mute silences the clip",
+           muted is None or (full is not None and muted < full - 20.0),
+           f"mean {muted:.1f} dB" if muted is not None else "no audio track (silent)")
+    report("audio:volume scales the level",
+           quiet is not None and full is not None and quiet < full - 6.0,
+           f"{full:.1f} dB → {quiet:.1f} dB"
+           if (full is not None and quiet is not None) else "no audio stream")
+
+    if export("fade", AudioProps(volume=1.0, fade_in=1.0, fade_out=1.0)) is None:
+        report("audio:fades shape the clip", False, "no audio stream")
+    else:
+        out_file = tmp / "audio_fade.mp4"
+        head = measure_level(out_file, 0.0, 0.2)
+        middle = measure_level(out_file, 0.6, 0.3)
+        tail = measure_level(out_file, 1.25, 0.25)
+        if None in (head, middle, tail):
+            report("audio:fades shape the clip", False, "could not measure")
+        else:
+            report("audio:fades shape the clip",
+                   head < middle - 8.0 and tail < middle - 8.0,
+                   f"head {head:.1f} / middle {middle:.1f} / tail {tail:.1f} dB")
+
+
+def audit_easings(tmp: Path, src: str) -> None:
+    """Every easing must bend the interpolation curve it advertises."""
+    from vn_editor.core.model import Keyframe, EASINGS, eval_keyframes
+    print(f"\neasings ({len(EASINGS)})")
+    for name in EASINGS:
+        # The easing lives on the keyframe that *ends* the segment.
+        kf = [Keyframe(t=0.0, value=0.0, easing="linear"),
+              Keyframe(t=1.0, value=1.0, easing=name)]
+        try:
+            quarter = eval_keyframes(kf, 0.25, 0.0)
+            half = eval_keyframes(kf, 0.5, 0.0)
+        except Exception as exc:                   # noqa: BLE001
+            report(f"easing:{name}", False, f"{type(exc).__name__}: {exc}")
+            continue
+        if name == "linear":
+            ok = abs(half - 0.5) < 0.02 and abs(quarter - 0.25) < 0.02
+        elif name == "hold":
+            ok = abs(half) < 1e-6 and abs(quarter) < 1e-6
+        else:
+            ok = abs(half - 0.5) > 0.02 or abs(quarter - 0.25) > 0.02
+        report(f"easing:{name}", ok,
+               f"t=0.25→{quarter:.3f} 0.5→{half:.3f}")
+
+
+def audit_text_style(tmp: Path, src: str) -> None:
+    """Outline, shadow, background and alignment each have to show up."""
+    from vn_editor.core.model import TextProps
+    print("\ntext styling")
+    base = TextProps(text="STYLE", font="Bebas Neue", size=90.0,
+                     color="#ffffff")
+    variants = [
+        ("outline", dict(outline_width=8.0, outline_color="#ff0044")),
+        ("shadow", dict(shadow=8.0, shadow_color="#00ff00")),
+        ("background", dict(bg_enabled=True, bg_color="#0000ff",
+                            bg_opacity=1.0)),
+        ("alignment", dict(align="left")),
+        ("letter spacing", dict(letter_spacing=18.0)),
+    ]
+    plain = base_project(src)
+    track = plain.ensure_track_for("text")
+    clip = Clip(kind="text", track_id=track.id, start=0.0, duration=1.5)
+    clip.text = base
+    plain.add_clip(clip, track)
+    ok, reference = render_ok(plain, tmp, "text_plain", at=0.6)
+    if not ok:
+        report("text:plain", False, reference)
+        return
+    for i, (name, change) in enumerate(variants):
+        p = base_project(src)
+        track = p.ensure_track_for("text")
+        clip = Clip(kind="text", track_id=track.id, start=0.0, duration=1.5)
+        clip.text = TextProps(**{**base.to_dict(), **change})
+        p.add_clip(clip, track)
+        ok, frame = render_ok(p, tmp, f"text_{i}", at=0.6)
+        diff = mean_diff(reference, frame) if ok else -1.0
+        report(f"text:{name}", ok and diff > 0.5,
+               f"Δ={diff:.1f}" if ok else frame)
+
+
+def _loudness(path: Path) -> Optional[float]:
+    r = ff.ffmpeg("-v", "info", "-i", str(path), "-af", "volumedetect",
+                  "-f", "null", "-", timeout=180)
+    for line in (r.stderr or "").splitlines():
+        if "mean_volume" in line:
+            try:
+                return float(line.split("mean_volume:")[1].split("dB")[0])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def audit_audio_levels(tmp: Path, src: str) -> None:
+    """Volume, mute and fades have to be audible in the written file."""
+    from vn_editor.core.model import AudioProps
+    print("\naudio controls")
+    tone = tmp / "tone.wav"
+    if not tone.exists():
+        r = ff.ffmpeg("-y", "-v", "error", "-f", "lavfi", "-i",
+                      "sine=frequency=440:duration=1.6", str(tone),
+                      timeout=60)
+        if not r.ok:
+            report("audio:tone", False, "could not build the test tone")
+            return
+
+    def export(tag: str, props) -> Optional[Path]:
+        p = Project.create_default("a", 320, 180, 15.0)
+        info = probe_mod.probe(str(tone), use_cache=False)
+        asset = MediaAsset.from_info(info, str(tone))
+        p.assets.append(asset)
+        track = p.ensure_track_for("audio")
+        clip = Clip(kind="audio", track_id=track.id, start=0.0,
+                    duration=1.5)
+        clip.path = str(tone)
+        clip.asset_id = asset.id
+        clip.audio = props
+        p.add_clip(clip, track)
+        out = tmp / f"audio_{tag}.mp4"
+        opts = render_mod.options_from_settings(p)
+        opts.width, opts.height = 320, 180
+        opts.audio = True
+        result = render_mod.render(p, str(out), opts)
+        return out if result.ok else None
+
+    full_file = export("full", AudioProps(volume=1.0))
+    quiet_file = export("quiet", AudioProps(volume=0.15))
+    muted_file = export("mute", AudioProps(volume=1.0, muted=True))
+    full = _loudness(full_file) if full_file else None
+    quiet = _loudness(quiet_file) if quiet_file else None
+    report("audio:normal level", full is not None and full > -40.0,
+           f"mean {full:.1f} dB" if full is not None else "no audio stream")
+    muted = _loudness(muted_file) if muted_file else None
+    report("audio:mute silences the clip",
+           muted is None or muted < -60.0,
+           "no audio stream at all" if muted is None
+           else f"mean {muted:.1f} dB")
+    report("audio:volume scales the level",
+           full is not None and quiet is not None and quiet < full - 6.0,
+           f"{full:.1f} dB → {quiet:.1f} dB"
+           if (full is not None and quiet is not None) else "no audio stream")
+
+    faded = export("fade", AudioProps(volume=1.0, fade_in=1.0, fade_out=1.0))
+    if faded is None:
+        report("audio:fades at the head and tail", False, "no audio stream")
+    else:
+        head = _loudness_segment(faded, 0.0, 0.25)
+        middle = _loudness_segment(faded, 0.6, 0.3)
+        tail = _loudness_segment(faded, 1.25, 0.25)
+        if None in (head, middle, tail):
+            report("audio:fades at the head and tail", False,
+                   "could not measure the segments")
+        else:
+            report("audio:fades at the head and tail",
+                   head < middle - 6.0 and tail < middle - 6.0,
+                   f"head {head:.1f} / middle {middle:.1f} / "
+                   f"tail {tail:.1f} dB")
+
+
+def _loudness_segment(path: Path, start: float, span: float) -> Optional[float]:
+    r = ff.ffmpeg("-v", "info", "-ss", f"{start:.3f}", "-t", f"{span:.3f}",
+                  "-i", str(path), "-af", "volumedetect", "-f", "null", "-",
+                  timeout=180)
+    for line in (r.stderr or "").splitlines():
+        if "mean_volume" in line:
+            try:
+                return float(line.split("mean_volume:")[1].split("dB")[0])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def audit_export_presets(tmp: Path, src: str) -> None:
+    """Each export preset has to produce a real file of the right size."""
+    from vn_editor.core.model import EXPORT_PRESETS
+    print(f"\nexport presets ({len(EXPORT_PRESETS)})")
+    for key, label, bitrate, quality in EXPORT_PRESETS:
+        p = base_project(src)
+        asset = p.assets[0]
+        clip = p.all_clips()[0]
+        project_w, project_h = p.settings.width, p.settings.height
+        opts = render_mod.options_from_settings(p)
+        opts.width, opts.height = 160, 90
+        opts.audio = False
+        out = tmp / f"preset_{key}.mp4"
+        try:
+            result = render_mod.render(p, str(out), opts)
+        except Exception as exc:                   # noqa: BLE001
+            report(f"preset:{key}", False, f"{type(exc).__name__}: {exc}")
+            continue
+        info = probe_mod.probe(str(out), use_cache=False) if out.exists() else None
+        ok = (result.ok and info is not None and info.duration > 0.4
+              and info.width == 160 and info.height == 90)
+        report(f"preset:{key}", ok,
+               f"{info.width}x{info.height} {info.duration:.2f}s "
+               f"{out.stat().st_size // 1024} KB" if info else "no output")
 
 
 def audit_text_animations(tmp: Path, src: str) -> None:
@@ -639,6 +1019,13 @@ def main() -> int:
         ("grades", audit_grades),
         ("blends", audit_blends),
         ("presets", audit_text_presets),
+        ("easings", audit_easings),
+        ("styling", audit_text_style),
+        ("levels", audit_audio_levels),
+        ("exports", audit_export_presets),
+        ("easings", audit_easings),
+        ("styling", audit_text_style),
+        ("levels", audit_audio_levels),
         ("stab", audit_stabilize),
         ("lut", audit_lut_intensity),
         ("text", audit_text_animations),
