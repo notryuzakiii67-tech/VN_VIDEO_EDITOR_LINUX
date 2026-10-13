@@ -1837,6 +1837,10 @@ class AudioPage(BasePage):
         self.mute = QCheckBox("Mute")
         self.mute.toggled.connect(lambda on: self._set("muted", bool(on)))
         s.add(self.mute)
+        self.pan = SliderField(-1.0, 1.0, 0.0, decimals=2, default=0.0)
+        self.pan.valueChanged.connect(lambda v: self._set("pan", v))
+        self.pan.editingFinished.connect(self.ctx.end_gesture)
+        s.add(RowField("Pan  L / R", self.pan))
         self.fade_in = SliderField(0.0, 5.0, 0.0, decimals=2, suffix="s",
                                    default=0.0)
         self.fade_in.valueChanged.connect(lambda v: self._set("fade_in", v))
@@ -1856,6 +1860,19 @@ class AudioPage(BasePage):
             b.clicked.connect(lambda _=False, a=fi, c=fo: self._fades(a, c))
             frow.addWidget(b)
         s.add_layout(frow)
+
+        self.fade_curve_row = QHBoxLayout()
+        self.fade_curve_buttons = {}
+        for key, name in (("linear", "Linear"), ("smooth", "Smooth"),
+                          ("gentle", "Gentle"), ("quick", "Quick")):
+            b = QPushButton(name)
+            b.setProperty("class", "chip")
+            b.setCheckable(True)
+            b.setStyleSheet("padding: 3px 8px; font-size: 11px;")
+            b.clicked.connect(lambda _=False, k=key: self._set_curve(k))
+            self.fade_curve_row.addWidget(b)
+            self.fade_curve_buttons[key] = b
+        s.add(RowField("Fade curve", self._wrap(self.fade_curve_row)))
 
         s2 = self.section("Tone", "music")
         for key, lo, hi, dv in (("bass_boost", 0.0, 20.0, 0.0),
@@ -1889,6 +1906,17 @@ class AudioPage(BasePage):
                         coalesce=f"aud:{clip.id}:{key}")
         self.ctx.request_preview_refresh()
 
+    def _wrap(self, layout):
+        """Put a layout in a plain container so RowField can host it."""
+        holder = QWidget()
+        holder.setLayout(layout)
+        return holder
+
+    def _set_curve(self, key: str) -> None:
+        self._set("fade_type", key)
+        for k, b in self.fade_curve_buttons.items():
+            b.setChecked(k == key)
+
     def _fades(self, fade_in: float, fade_out: float) -> None:
         clip = self.ctx.selected_clip()
         if clip is None:
@@ -1909,8 +1937,8 @@ class AudioPage(BasePage):
         self.empty.setVisible(False)
         self._body.setVisible(True)
         a = clip.audio
-        for key, w in (("volume", self.volume), ("fade_in", self.fade_in),
-                       ("fade_out", self.fade_out)):
+        for key, w in (("volume", self.volume), ("pan", self.pan),
+                       ("fade_in", self.fade_in), ("fade_out", self.fade_out)):
             w.blockSignals(True)
             w.set_value(getattr(a, key))
             w.blockSignals(False)
@@ -1920,6 +1948,8 @@ class AudioPage(BasePage):
             w.blockSignals(True)
             w.set_value(getattr(a, key))
             w.blockSignals(False)
+        for key, b in self.fade_curve_buttons.items():
+            b.setChecked(key == getattr(a, "fade_type", "linear"))
         for cb, val in ((self.mute, a.muted), (self.normalize, a.normalize),
                         (self.reverse, a.reverse)):
             cb.blockSignals(True)

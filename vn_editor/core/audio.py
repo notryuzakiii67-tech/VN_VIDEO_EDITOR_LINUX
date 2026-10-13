@@ -10,6 +10,17 @@ from .speedcurve import audio_speed_graph, clamp_speed
 
 SAMPLE_RATE = 48000
 
+#: Fade shapes offered in the inspector.  The values are FFmpeg ``afade``
+#: curve names; the keys are what ``AudioProps.fade_type`` stores.  Measured
+#: mid-fade gain (tone at -24.1 dB RMS, 1 s fade, 0-0.3 s window):
+#: linear -39.3, smooth -35.6, gentle -52.0, quick -25.9 dB.
+FADE_CURVES = {
+    "linear": "tri",
+    "smooth": "qsin",
+    "gentle": "qua",
+    "quick": "log",
+}
+
 
 # --------------------------------------------------------------------------- #
 #  Per-clip chain
@@ -90,13 +101,27 @@ def clip_audio_filters(clip: Clip, counter, src_in: float,
     if ap.normalize:
         post.append("loudnorm=I=-16:TP=-1.5:LRA=11")
 
+    if abs(ap.pan) > 0.005:
+        # Stereo balance.  The source is forced to stereo first so the two
+        # channel expressions are always valid, and the far channel is the one
+        # that moves - the near channel keeps its level, which is what a
+        # balance control is supposed to do.
+        pan = max(-1.0, min(1.0, ap.pan))
+        gl = 1.0 if pan < 0 else 1.0 - pan
+        gr = 1.0 if pan > 0 else 1.0 + pan
+        post.append("aformat=channel_layouts=stereo")
+        post.append(f"pan=stereo|c0={num(gl, 4)}*c0|c1={num(gr, 4)}*c1")
+
+    curve = FADE_CURVES.get(ap.fade_type, "tri")
     fade_in = max(0.0, ap.fade_in)
     fade_out = max(0.0, ap.fade_out)
     if fade_in > 0.001:
-        post.append(f"afade=t=in:st=0:d={num(min(fade_in, clip.duration), 4)}")
+        post.append(f"afade=t=in:st=0:d={num(min(fade_in, clip.duration), 4)}:"
+                    f"curve={curve}")
     if fade_out > 0.001:
         start = max(0.0, clip.duration - fade_out)
-        post.append(f"afade=t=out:st={num(start, 4)}:d={num(min(fade_out, clip.duration), 4)}")
+        post.append(f"afade=t=out:st={num(start, 4)}:"
+                    f"d={num(min(fade_out, clip.duration), 4)}:curve={curve}")
 
     # 3. placement on the timeline + padding to project length
     delay_ms = int(round((clip.start + offset) * 1000))

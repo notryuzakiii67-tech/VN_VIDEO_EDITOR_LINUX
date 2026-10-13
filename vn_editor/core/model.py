@@ -296,7 +296,8 @@ class AudioProps:
     reverse: bool = False
     denoise: float = 0.0
     normalize: bool = False
-    fade_type: str = "linear"
+    pan: float = 0.0                    # -1 = hard left, +1 = hard right
+    fade_type: str = "linear"           # key into audio.FADE_CURVES
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

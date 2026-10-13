@@ -776,9 +776,10 @@ def audit_audio_effects(tmp: Path, src: str) -> None:
         res = render_mod.render(p, str(out), opts)
         return out if res.ok else None
 
-    def case(label, fixture, props, metric, better, floor, **kw):
+    def case(label, fixture, props, metric, better, floor, base_props=None, **kw):
         """``better(base, got)`` must hold, and by at least ``floor``."""
-        base = render(AudioProps(volume=1.0), fixture, f"base_{abs(hash(label)) % 9999}")
+        base = render(base_props or AudioProps(volume=1.0), fixture,
+                      f"base_{abs(hash(label)) % 9999}")
         got = render(props, fixture, f"cmd_{abs(hash(label)) % 9999}")
         if base is None or got is None:
             report(f"audio:{label}", False, "render failed")
@@ -824,6 +825,18 @@ def audit_audio_effects(tmp: Path, src: str) -> None:
     case("pitch shifts the tone", tone("tp.wav", 330.0),
          AudioProps(volume=1.0, pitch=1.5), "zcr",
          lambda b, g: g > b, 0.004)
+    # Panning is measured as the left/right difference: an unpanned stereo
+    # tone cancels to silence, a panned one does not.
+    case("pan pushes the sound left", tone("st.wav", 440.0),
+         AudioProps(volume=1.0, pan=-0.8), "rms",
+         lambda b, g: g > max(b, -45.0), 4.0, pre="pan=mono|c0=c0-c1")
+    case("pan pushes the sound right", tone("st2.wav", 440.0),
+         AudioProps(volume=1.0, pan=0.8), "rms",
+         lambda b, g: g > max(b, -45.0), 4.0, pre="pan=mono|c0=c1-c0")
+    case("fade curve reshapes the fade", tone("tf.wav", 440.0),
+         AudioProps(volume=1.0, fade_in=1.0, fade_type="quick"), "rms",
+         lambda b, g: g > b, 4.0, span=0.3,
+         base_props=AudioProps(volume=1.0, fade_in=1.0, fade_type="linear"))
 
 
 def audit_export_presets(tmp: Path, src: str) -> None:
