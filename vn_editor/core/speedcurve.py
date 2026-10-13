@@ -61,9 +61,20 @@ def atempo_chain(speed: float, pitch_correct: bool = True,
     speed = clamp_speed(speed)
     filters: List[str] = []
     if abs(pitch - 1.0) > 0.001:
-        # rubberband handles tempo+pitch together when available
-        filters.append(f"rubberband=tempo={num(speed, 5)}:pitch={num(pitch, 5)}")
-        return filters
+        from .ffmpeg import TOOLCHAIN
+        if TOOLCHAIN.has_filter("rubberband"):
+            # rubberband changes tempo and pitch together, which is the only
+            # way to keep the two independent in one pass.
+            filters.append(f"rubberband=tempo={num(speed, 5)}:"
+                           f"pitch={num(pitch, 5)}")
+            return filters
+        # Without rubberband, resampling shifts the pitch and an ``atempo``
+        # pass puts the tempo back where it belongs.  Slower than rubberband
+        # but it keeps the control working on a stock FFmpeg.
+        filters.append(f"asetrate=48000*{num(pitch, 5)},aresample=48000,"
+                       f"asetpts=N/SR/TB")
+        pitch = 1.0
+        speed = clamp_speed(speed / 1.0)
     if not pitch_correct:
         filters.append(f"asetrate=48000*{num(speed, 5)},aresample=48000,atempo=1")
         return filters
@@ -196,8 +207,14 @@ def video_speed_graph(clip: Clip, in_label: str, out_label: str,
     dur = max(0.02, clip.duration)
 
     if clip.freeze:
-        return (f"{src_lab}tpad=stop_mode=clone:stop_duration={num(dur, 4)},"
-                f"trim=duration={num(dur, 4)}[{out_label}]")
+        # A frozen clip shows the single frame at ``freeze_at`` for its whole
+        # length.  Taking that one frame and letting the layer's canvas hold it
+        # (``eof_action=repeat``) is what makes it freeze: ``tpad`` clones the
+        # *end* of the decoded input, which is ordinary footage, and it is
+        # dropped by the following trim anyway.
+        fa = max(0.0, float(clip.freeze_at))
+        head = f"{src_lab}trim=start={num(fa, 5)}," if fa > 1e-4 else src_lab
+        return (f"{head}trim=end_frame=1,setpts=PTS-STARTPTS[{out_label}]")
 
     if curve is not None and curve.is_ramp() and not clip.reverse:
         slices = curve_slices(curve, src_len, steps=20, duration=dur)
@@ -252,9 +269,13 @@ def audio_speed_graph(clip: Clip, in_label: str, out_label: str,
     src_len = max(0.02, source_span(clip))
     dur = max(0.02, clip.duration)
 
-    if ap.muted or ap.speed_mode == "mute":
-        return (f"{src_lab}anullsrc=r=48000:cl=stereo,"
-                f"atrim=duration={num(dur, 4)}[{out_label}]")
+    if ap.muted or ap.speed_mode == "mute" or clip.freeze:
+        # Silence, but still consuming the input pad: ``anullsrc`` is a source
+        # filter, so feeding ``[n:a]`` into it produces a graph FFmpeg refuses
+        # to bind ("Error binding filtergraph inputs/outputs").  A frozen clip
+        # is silent here too rather than playing a 20 ms scrap of the source.
+        return (f"{src_lab}volume=0,atrim=duration={num(dur, 4)},"
+                f"asetpts=PTS-STARTPTS[{out_label}]")
 
     if curve is not None and curve.is_ramp() and not clip.reverse:
         slices = curve_slices(curve, src_len, steps=12, duration=dur)
@@ -292,7 +313,9 @@ def audio_speed_graph(clip: Clip, in_label: str, out_label: str,
         parts.append("areverse")
     parts.append(f"atrim=duration={num(src_len, 5)}")
     parts.append("asetpts=PTS-STARTPTS")
-    if abs(speed - 1.0) > 1e-4:
+    # ``pitch`` is a control of its own: it has to apply even when the clip
+    # plays at normal speed, otherwise the slider does nothing on its own.
+    if abs(speed - 1.0) > 1e-4 or abs(ap.pitch - 1.0) > 0.001:
         parts.extend(atempo_chain(speed, ap.speed_mode == "pitch_correct",
                                   ap.pitch))
     parts.append("aformat=sample_fmts=fltp:sample_rates=48000:"

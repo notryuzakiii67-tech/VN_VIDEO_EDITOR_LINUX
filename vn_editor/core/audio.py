@@ -60,15 +60,33 @@ def clip_audio_filters(clip: Clip, counter, src_in: float,
                     f"ratio={num(1 + 9 * max(0.0, min(1.0, ap.compressor)), 3)}:"
                     f"attack=8:release=180")
     if ap.denoise > 0.01:
-        post.append(f"afftdn=nr={num(6 + 18 * ap.denoise, 3)}:nf=-32")
+        # ``nf`` (the assumed noise floor) has to sit near the level of the
+        # noise itself: pinned at -32 dB it left almost all hiss in place
+        # (measured: -0.7 dB).  Tracking the slider from -36 dB to -14 dB takes
+        # the floor down by ~12 dB at full strength on a -19 dB hiss.
+        d = max(0.0, min(1.0, ap.denoise))
+        # ``nf`` is capped at -20 dB by FFmpeg, and asking for more makes the
+        # whole graph fail to build.
+        post.append(f"afftdn=nr={num(6 + 42 * d, 3)}:"
+                    f"nf={num(min(-20.0, -36 + 22 * d), 3)}")
     if abs(ap.three_d) > 0.01:
         post.append(f"extrastereo=m={num(1 + ap.three_d * 1.5, 3)}")
     if ap.echo > 0.01:
-        post.append(f"aecho=0.8:{num(0.5 + 0.35 * ap.echo, 3)}:"
-                    f"{num(120 + 240 * ap.echo, 1)}:{num(0.25 + 0.4 * ap.echo, 3)}")
+        # in_gain stays at 1.0: adding an echo must not duck the direct sound.
+        # Two taps, the second twice as far out as the first, so it reads as a
+        # repeat rather than a single blur.
+        e = max(0.0, min(1.0, ap.echo))
+        d1 = int(120 + 240 * e)
+        post.append(f"aecho=1.0:{num(0.7 + 0.2 * e, 3)}:"
+                    f"{d1}|{d1 * 2}:"
+                    f"{num(0.45 + 0.35 * e, 3)}|{num(0.25 + 0.3 * e, 3)}")
     if ap.reverb > 0.01:
-        post.append(f"aecho=0.85:0.75:{num(60 + 120 * ap.reverb, 1)}:"
-                    f"{num(0.2 + 0.5 * ap.reverb, 3)}")
+        r = max(0.0, min(1.0, ap.reverb))
+        d1 = int(50 + 90 * r)
+        post.append(f"aecho=1.0:{num(0.6 + 0.25 * r, 3)}:"
+                    f"{d1}|{d1 * 2}|{d1 * 3}:"
+                    f"{num(0.4 + 0.3 * r, 3)}|{num(0.3 + 0.25 * r, 3)}|"
+                    f"{num(0.2 + 0.2 * r, 3)}")
     if ap.normalize:
         post.append("loudnorm=I=-16:TP=-1.5:LRA=11")
 

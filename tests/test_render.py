@@ -70,6 +70,65 @@ def make_source(name: str, w: int, h: int, dur: float, fps: float = 30,
     return out
 
 
+#: Ten flat colours, 0.3 s each: the colour of a frame says which moment of
+#: the source is on screen, which is what makes reverse/freeze/speed testable.
+BANDS = ["0x202020", "0xe00000", "0xff8000", "0xffff00", "0x00c000",
+         "0x00c0c0", "0x0000ff", "0x8000ff", "0xff00ff", "0xffffff"]
+BAND_SECONDS = 0.3
+BAND_RGB = [(int(c[2:4], 16), int(c[4:6], 16), int(c[6:8], 16)) for c in BANDS]
+
+
+def make_banded_clip(name="bands.mp4", fps=30, secs=BAND_SECONDS) -> Path:
+    """A 3 s clip of ten flat colour bands, one per 0.3 s."""
+    out = TMP / name
+    if out.exists():
+        return out
+    args = [ff.TOOLCHAIN.ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+    for c in BANDS:
+        args += ["-f", "lavfi", "-i",
+                 f"color=c={c}:s=320x180:r={fps}:d={secs}"]
+    graph = "".join(f"[{i}:v]" for i in range(len(BANDS))) + \
+        f"concat=n={len(BANDS)}:v=1:a=0[o]"
+    args += ["-filter_complex", graph, "-map", "[o]", "-c:v", "libx264",
+             "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-g", str(int(fps)), str(out)]
+    r = sh(args)
+    if r.returncode != 0:
+        raise RuntimeError(f"could not build the banded clip: {r.stderr[-300:]}")
+    return out
+
+
+def band_of(t: float) -> int:
+    """Which colour band of the source a time falls in."""
+    i = int(t / BAND_SECONDS)
+    return max(0, min(len(BANDS) - 1, i))
+
+
+def nearest_band(rgb) -> tuple:
+    """(band index, distance) of the colour a frame actually shows."""
+    if not rgb:
+        return -1, 1e9
+    best, dist = -1, 1e9
+    for i, ref in enumerate(BAND_RGB):
+        d = sum(abs(a - b) for a, b in zip(rgb, ref))
+        if d < dist:
+            best, dist = i, d
+    return best, dist
+
+
+def zcr(path: Path) -> float:
+    """Zero-crossing rate of the first channel — a frequency proxy."""
+    r = sh([ff.TOOLCHAIN.ffmpeg, "-v", "info", "-i", str(path), "-af",
+            "astats=metadata=0", "-f", "null", "-"], timeout=180)
+    for line in (r.stderr or "").splitlines():
+        if "Zero crossings rate" in line:
+            try:
+                return float(line.split(":")[-1].strip())
+            except ValueError:
+                return -1.0
+    return -1.0
+
+
 def make_green_clip(name="green.mp4", w=320, h=240, dur=2.0) -> Path:
     out = TMP / name
     if out.exists():
@@ -472,6 +531,133 @@ def t_audio_flag():
             continue
         ok, why = ok_output(TMP / name, 1.4, 540, 960, expect)
         check(ok, f"{tag}: {why}")
+
+
+@test("reverse plays the clip backwards")
+def t_reverse():
+    src = make_banded_clip()
+
+    def build(reverse: bool, name: str):
+        p = base_project(320, 180)
+        a = add_asset(p, src)
+        c = add_video(p, a, 0.0, 3.0)
+        c.reverse = reverse
+        return render(p, name, width=320, height=180, audio=False)
+
+    if not check(build(False, "bands_fwd.mp4").ok, "forward render failed"):
+        return
+    if not check(build(True, "bands_rev.mp4").ok, "reverse render failed"):
+        return
+    for t in (0.45, 1.65, 2.55):
+        rgb = avg_rgb(frame_at(TMP / "bands_rev.mp4", t,
+                               f"rev_{int(t * 100)}.png"))
+        got, dist = nearest_band(rgb)
+        want = band_of(3.0 - t)
+        check(got == want and dist < 90,
+              f"reverse at {t}s shows band {got}, expected {want}",
+              f"rgb={rgb} distance={dist:.0f}")
+
+
+@test("freeze frame holds one frame")
+def t_freeze():
+    src = make_banded_clip()
+    p = base_project(320, 180)
+    a = add_asset(p, src)
+    c = add_video(p, a, 0.0, 3.0)
+    c.freeze = True
+    c.freeze_at = 1.5
+    res = render(p, "freeze.mp4", width=320, height=180, audio=False)
+    if not check(res.ok, "freeze render failed", res.error):
+        return
+    frames = {}
+    for t in (0.3, 1.5, 2.7):
+        frames[t] = frame_at(TMP / "freeze.mp4", t, f"fz_{int(t * 10)}.png")
+    first = avg_rgb(frames[0.3])
+    got, dist = nearest_band(first)
+    check(got == band_of(1.5),
+          "the frozen clip does not show the frame at freeze_at",
+          f"band {got}, expected {band_of(1.5)}, rgb={first}")
+    check(frame_diff(frames[0.3], frames[2.7]) < 2.0,
+          "the frozen clip is not still",
+          f"Δ={frame_diff(frames[0.3], frames[2.7]):.1f}")
+    check(frame_diff(frames[0.3], frames[1.5]) < 2.0,
+          "the frozen clip changes under the playhead",
+          f"Δ={frame_diff(frames[0.3], frames[1.5]):.1f}")
+
+
+@test("speed maps time into the source")
+def t_speed():
+    src = make_banded_clip()
+
+    def build(speed: float, duration: float, name: str):
+        p = base_project(320, 180)
+        a = add_asset(p, src)
+        c = add_video(p, a, 0.0, duration)
+        c.speed = speed
+        return render(p, name, width=320, height=180, audio=False)
+
+    if not check(build(0.5, 3.0, "spd_half.mp4").ok, "half-speed render failed"):
+        return
+    if not check(build(2.0, 1.5, "spd_double.mp4").ok,
+                 "double-speed render failed"):
+        return
+    # half speed: 2.4 s into the clip is 1.2 s into the source
+    case = ("spd_half.mp4", 2.4, 1.2)
+    rgb = avg_rgb(frame_at(TMP / case[0], case[1],
+                           f"spd_{int(case[1] * 100)}.png"))
+    got, dist = nearest_band(rgb)
+    check(got == band_of(case[2]),
+          f"half speed at {case[1]}s shows band {got}, expected "
+          f"{band_of(case[2])} (source {case[2]}s)", f"rgb={rgb}")
+    # double speed: 1.2 s into the clip is 2.4 s into the source
+    rgb = avg_rgb(frame_at(TMP / "spd_double.mp4", 1.2, "spd_d.png"))
+    got, dist = nearest_band(rgb)
+    check(got == band_of(2.4),
+          f"double speed at 1.2s shows band {got}, expected {band_of(2.4)} "
+          f"(source 2.4s)", f"rgb={rgb}")
+
+
+@test("audio speed modes change the pitch, not the level")
+def t_audio_speed_modes():
+    """Pitch-corrected slows keep the tone; pitch-shifted ones do not."""
+    src = make_source("src_pitch.mp4", 320, 180, 4.0)
+
+    def build(mode: str, name: str):
+        p = base_project(320, 180)
+        a = add_asset(p, src)
+        c = add_video(p, a, 0.0, 1.5)
+        c.speed = 2.0
+        c.audio.speed_mode = mode
+        return render(p, name, width=320, height=180)
+
+    if not check(build("pitch_correct", "pitch_keep.mp4").ok,
+                 "pitch-corrected render failed"):
+        return
+    if not check(build("pitch_shift", "pitch_shift.mp4").ok,
+                 "pitch-shifted render failed"):
+        return
+    if not check(build("mute", "pitch_mute.mp4").ok, "muted render failed"):
+        return
+    kept = zcr(TMP / "pitch_keep.mp4")
+    shifted = zcr(TMP / "pitch_shift.mp4")
+    muted = probe.probe(str(TMP / "pitch_mute.mp4"), use_cache=False)
+    check(kept > 0 and abs(kept - 0.01375) < 0.005,
+          "pitch-corrected audio runs at the wrong pitch",
+          f"zero-crossing rate {kept:.5f}, expected ≈0.01375")
+    check(shifted > kept * 1.5,
+          "pitch-shifted audio did not change pitch",
+          f"kept {kept:.5f} vs shifted {shifted:.5f}")
+    if muted.has_audio:
+        r = sh([ff.TOOLCHAIN.ffmpeg, "-v", "info", "-i",
+                str(TMP / "pitch_mute.mp4"), "-af", "volumedetect",
+                "-f", "null", "-"], timeout=120)
+        peaks = [ln for ln in r.stderr.splitlines() if "max_volume" in ln]
+        peak = float(peaks[0].split("max_volume:")[1].split("dB")[0]) \
+            if peaks else 0.0
+        check(peak < -60.0, "muted speed mode still has audible audio",
+              f"peak {peak:.1f} dB")
+    else:
+        check(True, "muted speed mode exports without an audio stream")
 
 
 @test("effects stack")

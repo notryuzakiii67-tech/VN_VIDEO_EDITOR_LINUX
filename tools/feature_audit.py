@@ -681,6 +681,151 @@ def _loudness_segment(path: Path, start: float, span: float) -> Optional[float]:
     return None
 
 
+def _audio_metrics(path: Path, start: float = 0.0, span: float = 0.0,
+                   pre: str = "") -> Dict[str, float]:
+    """RMS / peak / zero-crossing rate of a file (or of one slice of it)."""
+    args: List[str] = ["-v", "info"]
+    if start > 0:
+        args += ["-ss", f"{start:.3f}"]
+    if span > 0:
+        args += ["-t", f"{span:.3f}"]
+    args += ["-i", str(path)]
+    chain = (pre + "," if pre else "") + "astats=metadata=0:reset=0"
+    r = ff.ffmpeg(*args, "-af", chain, "-f", "null", "-", timeout=180)
+    out = {"rms": -99.0, "peak": -99.0, "zcr": -1.0}
+    for line in (r.stderr or "").splitlines():
+        if "RMS level dB" in line and out["rms"] == -99.0:
+            out["rms"] = _tail_float(line)
+        elif "Peak level dB" in line and out["peak"] == -99.0:
+            out["peak"] = _tail_float(line)
+        elif "Zero crossings rate" in line and out["zcr"] < 0:
+            out["zcr"] = _tail_float(line)
+    return out
+
+
+def _tail_float(line: str) -> float:
+    try:
+        return float(line.split(":")[-1].strip())
+    except ValueError:
+        return -99.0
+
+
+def audit_audio_effects(tmp: Path, src: str) -> None:
+    """Every audio control has to change the sound of the written file."""
+    from vn_editor.core.model import AudioProps
+    print("\naudio shaping")
+
+    def tone(name: str, hz: float, secs: float = 1.5, level: float = 0.4,
+             right: float = 0.0) -> Path:
+        out = tmp / name
+        if out.exists():
+            return out
+        args = ["-y", "-v", "error", "-f", "lavfi", "-i",
+                f"sine=frequency={hz}:duration={secs}"]
+        if right:
+            args += ["-f", "lavfi", "-i",
+                     f"sine=frequency={right}:duration={secs}",
+                     "-filter_complex", "[0:a][1:a]amerge=inputs=2[a]",
+                     "-map", "[a]"]
+        args += ["-af" if not right else "-c:a", "*"] if False else []
+        args += ["-c:a", "pcm_s16le", "-ar", "48000"]
+        if not right:
+            args += ["-af", f"volume={level}"]
+        args += [str(out)]
+        r = ff.ffmpeg(*args, timeout=120)
+        if not r.ok:
+            raise RuntimeError(r.stderr[-200:])
+        return out
+
+    def blip(name: str, secs: float = 0.3, total: float = 1.5) -> Path:
+        """A short tone followed by silence: the silence is where a tail shows."""
+        out = tmp / name
+        if not out.exists():
+            ff.ffmpeg("-y", "-v", "error", "-f", "lavfi", "-i",
+                      f"sine=frequency=440:duration={secs}", "-af",
+                      f"apad=whole_dur={total}", "-c:a", "pcm_s16le",
+                      "-ar", "48000", str(out), timeout=120)
+        return out
+
+    def noise(name: str, secs: float = 1.5) -> Path:
+        out = tmp / name
+        if not out.exists():
+            ff.ffmpeg("-y", "-v", "error", "-f", "lavfi", "-i",
+                      f"anoisesrc=duration={secs}:amplitude=0.25:color=white",
+                      "-c:a", "pcm_s16le", "-ar", "48000", str(out),
+                      timeout=120)
+        return out
+
+    def render(props, fixture: Path, tag: str, duration: float = 1.5):
+        p = Project.create_default("a", 320, 180, 30.0)
+        asset = MediaAsset.from_info(
+            probe_mod.probe(str(fixture), use_cache=False), str(fixture))
+        p.assets.append(asset)
+        track = p.ensure_track_for("audio")
+        clip = Clip(kind="audio", track_id=track.id, start=0.0,
+                    duration=duration)
+        clip.path = str(fixture)
+        clip.asset_id = asset.id
+        clip.audio = props
+        p.add_clip(clip, track)
+        opts = render_mod.options_from_settings(p)
+        opts.audio_only = True
+        opts.video = False
+        opts.audio = True
+        out = tmp / f"afx_{tag}.m4a"
+        res = render_mod.render(p, str(out), opts)
+        return out if res.ok else None
+
+    def case(label, fixture, props, metric, better, floor, **kw):
+        """``better(base, got)`` must hold, and by at least ``floor``."""
+        base = render(AudioProps(volume=1.0), fixture, f"base_{abs(hash(label)) % 9999}")
+        got = render(props, fixture, f"cmd_{abs(hash(label)) % 9999}")
+        if base is None or got is None:
+            report(f"audio:{label}", False, "render failed")
+            return
+        b = _audio_metrics(base, **kw)[metric]
+        g = _audio_metrics(got, **kw)[metric]
+        ok = better(b, g) and abs(g - b) >= floor
+        report(f"audio:{label}", ok, f"{metric} {b:.2f} → {g:.2f}")
+
+    case("high-pass cuts a low tone", tone("t120.wav", 120.0),
+         AudioProps(volume=1.0, highpass=2000.0), "rms",
+         lambda b, g: g < b, 6.0)
+    case("low-pass cuts a high tone", tone("t6k.wav", 6000.0),
+         AudioProps(volume=1.0, lowpass=1500.0), "rms",
+         lambda b, g: g < b, 6.0)
+    case("bass EQ lifts a low tone", tone("t120b.wav", 120.0),
+         AudioProps(volume=1.0, eq_low=12.0), "rms",
+         lambda b, g: g > b, 3.0)
+    case("mid EQ lifts a mid tone", tone("t1200.wav", 1200.0),
+         AudioProps(volume=1.0, eq_mid=12.0), "rms",
+         lambda b, g: g > b, 3.0)
+    case("treble EQ lifts a high tone", tone("t6kb.wav", 6000.0),
+         AudioProps(volume=1.0, eq_high=12.0), "rms",
+         lambda b, g: g > b, 3.0)
+    case("compressor tames peaks", tone("loud.wav", 440.0, level=0.95),
+         AudioProps(volume=1.0, compressor=1.0), "peak",
+         lambda b, g: g < b, 1.0)
+    case("echo adds a tail", blip("blip.wav", total=1.6),
+         AudioProps(volume=1.0, echo=0.8), "peak",
+         lambda b, g: g > max(b, -45.0), 25.0, start=0.45, span=0.7)
+    case("reverb adds a tail", blip("blip2.wav", total=1.6),
+         AudioProps(volume=1.0, reverb=0.8), "peak",
+         lambda b, g: g > max(b, -45.0), 25.0, start=0.45, span=0.7)
+    case("denoise quietens hiss", noise("hiss.wav"),
+         AudioProps(volume=1.0, denoise=1.0), "rms",
+         lambda b, g: g < b, 8.0)
+    case("normalize lifts a quiet clip", tone("quiet.wav", 440.0, level=0.05),
+         AudioProps(volume=1.0, normalize=True), "rms",
+         lambda b, g: g > b, 4.0)
+    case("3D widens the image", tone("stereo.wav", 330.0, right=880.0),
+         AudioProps(volume=1.0, three_d=1.0), "rms",
+         lambda b, g: g > b, 3.0, pre="pan=mono|c0=c0-c1")
+    case("pitch shifts the tone", tone("tp.wav", 330.0),
+         AudioProps(volume=1.0, pitch=1.5), "zcr",
+         lambda b, g: g > b, 0.004)
+
+
 def audit_export_presets(tmp: Path, src: str) -> None:
     """Each export preset has to produce a real file of the right size."""
     from vn_editor.core.model import EXPORT_PRESETS
@@ -1019,6 +1164,7 @@ def main() -> int:
         ("grades", audit_grades),
         ("blends", audit_blends),
         ("presets", audit_text_presets),
+        ("audiofx", audit_audio_effects),
         ("easings", audit_easings),
         ("styling", audit_text_style),
         ("levels", audit_audio_levels),
