@@ -248,7 +248,7 @@ when this build of FFmpeg actually provides them.
 ```bash
 python tests/test_render.py                  # 30 engine/render checks (~38 s)
 python tools/feature_audit.py                # renders every catalogue entry (~35 s)
-python tools/export_check.py                 # full MP4 export + verification
+python tools/export_check.py                 # the POV-short workflow, verified
 python tools/gui_smoke.py                    # 26 headless GUI checks + screenshots
 python -m vn_editor --self-test              # environment report
 ```
@@ -267,6 +267,13 @@ track exports normally with audio enabled (this used to fail outright with
 "Error binding filtergraph inputs/outputs" because the mix referenced a stream
 that was never there), and a stale ``has_audio`` flag is overridden by what the
 file actually contains.
+
+`tools/export_check.py` walks the primary workflow — 16:9 gameplay into a 9:16
+canvas, zoomed, sped up 1.5x, with Bebas Neue captions, a sticker and three
+meme sound effects — and then proves each part is in the file: the captions and
+sticker are measured by re-rendering with those tracks hidden and counting the
+pixels they occupy, and the effects are measured by re-rendering with the audio
+track muted and comparing peak levels in their windows.
 
 On a desktop the GUI checks run directly. On a headless machine (no GL/X11/dbus
 at all, like a container) generate stub platform libraries first:

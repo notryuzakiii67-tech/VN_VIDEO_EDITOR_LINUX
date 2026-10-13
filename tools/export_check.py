@@ -98,6 +98,118 @@ def main() -> int:
     mean = [ln for ln in (r.stderr or "").splitlines() if "mean_volume" in ln]
     print("  " + (mean[0].strip() if mean else "no volume report"))
 
+    # ---- does the scenario actually show up in the file? ------------------ #
+    def frame(video: Path, t: float, tag: str) -> str:
+        png = out / f"cmp_{tag}.png"
+        r = ff.ffmpeg("-y", "-v", "error", "-ss", f"{t}", "-i", str(video),
+                      "-frames:v", "1", "-update", "1", str(png), timeout=90)
+        return str(png) if r.ok and png.exists() else ""
+
+    def diff(a: str, b: str) -> float:
+        """Percentage of pixels that differ between two stills.
+
+        A mean difference over the whole frame drowns a caption on a busy
+        gameplay frame; counting the pixels that actually changed does not.
+        """
+        if not (a and b):
+            return -1.0
+        ra, rb = out / "d_a.rgb", out / "d_b.rgb"
+        for src_file, dst in ((a, ra), (b, rb)):
+            r = ff.ffmpeg("-y", "-v", "error", "-i", src_file, "-vf",
+                          "scale=160:160", "-f", "rawvideo", "-pix_fmt",
+                          "rgb24", str(dst), timeout=90)
+            if not r.ok:
+                return -1.0
+        da, db = ra.read_bytes(), rb.read_bytes()
+        if len(da) != len(db) or not da:
+            return -1.0
+        changed = total = 0
+        for i in range(0, len(da) - 2, 3):
+            total += 1
+            if (abs(da[i] - db[i]) > 18 or abs(da[i + 1] - db[i + 1]) > 18
+                    or abs(da[i + 2] - db[i + 2]) > 18):
+                changed += 1
+        return 100.0 * changed / max(1, total)
+
+    failures = []
+    # The captions run 0.4-2.0 s, 2.4-4.0 s and 4.4-6.0 s, the sticker
+    # 3.0-4.8 s, so 2.2 s and 4.2 s are the frames with nothing overlaid: a
+    # difference there would mean the comparison itself is unsound.
+    def render_without(kinds, name):
+        path = out / name
+        touched = [tr for tr in project.tracks if tr.kind in kinds]
+        for tr in touched:
+            tr.hidden = True
+        res = render_mod.render(project, str(path), opts)
+        for tr in touched:
+            tr.hidden = False
+        return res.ok, path
+
+    def compare(label, on, off, reference: Path, floor: float) -> None:
+        with_it = diff(frame(target, on, f"{label}_on_a"),
+                       frame(reference, on, f"{label}_on_b"))
+        without = diff(frame(target, off, f"{label}_off_a"),
+                       frame(reference, off, f"{label}_off_b"))
+        ok = with_it > floor and without < 0.4
+        print(f"  {label:10s} at {on}s: {with_it:5.1f}% of pixels carry it, "
+              f"{without:4.1f}% at {off}s where it is absent")
+        if not ok:
+            failures.append(f"{label} not visible in the export")
+
+    ok, no_overlays = render_without(("text", "sticker"), "no_overlays.mp4")
+    if not ok:
+        failures.append("could not render the no-overlay control")
+    else:
+        compare("caption 1", 1.0, 2.2, no_overlays, 2.0)
+        compare("caption 2", 2.7, 2.2, no_overlays, 2.0)
+
+    ok, no_sticker = render_without(("sticker",), "no_sticker.mp4")
+    if not ok:
+        failures.append("could not render the no-sticker control")
+    else:
+        compare("sticker", 3.6, 2.2, no_sticker, 1.0)
+
+    # Silence the sound-effect track and compare the loudness where the
+    # effects sit: an SFX that never made it into the mix shows no difference.
+    muted = out / "no_sfx.mp4"
+    sfx_track = next((t for t in project.tracks if t.kind == "audio"), None)
+    if sfx_track is not None:
+        sfx_track.muted = True
+        quiet_audio = render_mod.render(project, str(muted), opts)
+        sfx_track.muted = False
+        if not quiet_audio.ok:
+            failures.append("could not render the no-sfx control")
+        else:
+            def peak(video: Path, start: float, span: float) -> float:
+                r = ff.ffmpeg("-v", "info", "-ss", f"{start:.2f}", "-t",
+                              f"{span:.2f}", "-i", str(video), "-af",
+                              "volumedetect", "-f", "null", "-", timeout=120)
+                vals = [ln for ln in (r.stderr or "").splitlines()
+                        if "max_volume" in ln]
+                if not vals:
+                    return -99.0
+                try:
+                    return float(vals[0].split("max_volume:")[1].split("dB")[0])
+                except (IndexError, ValueError):
+                    return -99.0
+            louder = 0
+            for key, at in (("fahhh", 2.2), ("thud", 3.9), ("get_out", 5.2)):
+                with_sfx = peak(target, at, 0.5)
+                without_sfx = peak(muted, at, 0.5)
+                hit = with_sfx > without_sfx + 1.0
+                louder += 1 if hit else 0
+                print(f"  sfx {key:8s} at {at}s: peak {with_sfx:6.1f} dB "
+                      f"with the effect, {without_sfx:6.1f} dB without")
+            if louder < 2:
+                failures.append("the sound effects are not audible in the mix")
+    for name in ("no_overlays.mp4", "no_sticker.mp4", "no_sfx.mp4"):
+        (out / name).unlink(missing_ok=True)
+    if failures:
+        for f in failures:
+            print(f"FAIL: {f}")
+        return 1
+    print("  scenario verified: captions, sticker and SFX are in the file")
+
     print(f"EXPORT OK in {time.time() - t0:.1f}s "
           f"({result.frames} frames, {result.frames / max(0.001, result.elapsed):.1f} fps)")
     return 0
