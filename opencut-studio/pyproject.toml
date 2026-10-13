@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencut-studio"
+version = "0.1.0"
+description = "OpenCut Studio — a simple, professional open-source desktop video editor for Ubuntu Linux"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.10"
+authors = [{ name = "OpenCut Studio contributors" }]
+keywords = ["video-editor", "opencut", "pyside6", "ffmpeg", "ubuntu"]
+dependencies = [
+    "PySide6-Essentials>=6.6,<6.10",
+    "PySide6-Addons>=6.6,<6.10",
+    "numpy>=1.24",
+    "imageio-ffmpeg>=0.4.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[project.gui-scripts]
+opencut-studio = "opencut.app.main:main"
+
+# The media engine (package `vn_editor`, GPL-3.0) lives next to this
+# project in the source repository and is imported through
+# `opencut.engine`.  See docs/ARCHITECTURE.md for the layout and for how
+# to vendor the engine when splitting this project into its own repo.
+[tool.setuptools]
+packages = [
+    "opencut",
+    "opencut.app",
+    "opencut.media",
+    "opencut.project",
+    "opencut.timeline",
+    "opencut.rendering",
+    "opencut.ui",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

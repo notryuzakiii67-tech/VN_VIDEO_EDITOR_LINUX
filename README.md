@@ -9,6 +9,13 @@ machine: no account, no cloud, no subscription, no GPU.
 
 ![workspace](docs/screenshots/workspace.png)
 
+> **Also in this repository: [OpenCut Studio](opencut-studio/)** — a new,
+> simpler open-source editor (GPL-3.0) built on the same media engine
+> (`vn_editor.core`) with its own original interface and `.opencut`
+> project format. Phase 1 (working MVP: import → edit → preview →
+> export, with an automated acceptance test) is complete; see
+> `opencut-studio/README.md` and `opencut-studio/docs/ROADMAP.md`.
+
 ---
 
 ## Install

@@ -1,0 +1,3 @@
+# OpenCut Studio — development dependencies (tests, tooling).
+-r requirements.txt
+pytest>=7.4
