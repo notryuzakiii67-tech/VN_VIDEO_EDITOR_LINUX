@@ -246,7 +246,7 @@ when this build of FFmpeg actually provides them.
 ## Tests
 
 ```bash
-python tests/test_render.py                  # 29 engine/render checks (~35 s)
+python tests/test_render.py                  # 30 engine/render checks (~38 s)
 python tools/feature_audit.py                # renders every catalogue entry (~35 s)
 python tools/export_check.py                 # full MP4 export + verification
 python tools/gui_smoke.py                    # 26 headless GUI checks + screenshots
@@ -261,6 +261,12 @@ the cut — the outgoing clip's last frame is held for the transition's duration
 while the incoming clip fades in — instead of silently collapsing into a hard
 cut.  Both of those were real bugs, found by these checks rather than by
 watching output, and both now have regression tests.
+
+Audio is decided by the media, not by a flag: a clip whose file has no audio
+track exports normally with audio enabled (this used to fail outright with
+"Error binding filtergraph inputs/outputs" because the mix referenced a stream
+that was never there), and a stale ``has_audio`` flag is overridden by what the
+file actually contains.
 
 On a desktop the GUI checks run directly. On a headless machine (no GL/X11/dbus
 at all, like a container) generate stub platform libraries first:

@@ -190,8 +190,37 @@ def mixdown_wav(project: Project, out_path: str, duration: float,
     return argv, inputs
 
 
-def _has_audio(clip: Clip) -> bool:
-    return bool(clip.meta.get("has_audio", True))
+def clip_has_audio(clip: Clip) -> bool:
+    """Whether a clip contributes an audio stream.
+
+    A clip imported through the UI carries ``meta["has_audio"]``.  When that flag
+    is missing — an older project, a clip pasted without its metadata, media
+    replaced after import — the file itself is probed.  Guessing "yes" here is
+    what used to make a silent export fail outright: the mix referenced an audio
+    stream the input never had.
+    """
+    if clip.kind == "audio":
+        return True
+    if not clip.path:
+        return False
+    try:
+        from .probe import probe as _probe
+        info = _probe(str(clip.path), use_cache=True)
+    except Exception:                              # noqa: BLE001
+        info = None
+    # A file the probe could actually read settles the question, even against a
+    # stale flag (media replaced after import, project written elsewhere).
+    usable = (info is not None
+              and (bool(getattr(info, "has_audio", False))
+                   or bool(getattr(info, "has_video", False))
+                   or float(getattr(info, "duration", 0.0) or 0.0) > 0.001))
+    if usable:
+        return bool(getattr(info, "has_audio", False))
+    flag = clip.meta.get("has_audio")
+    return bool(flag) if flag is not None else False
+
+
+_has_audio = clip_has_audio
 
 
 def _source_in(clip: Clip, start: float) -> float:

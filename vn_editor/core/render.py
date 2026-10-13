@@ -801,6 +801,7 @@ def _handle_after(project: Project, clip: Clip) -> float:
 
 def _build_audio(builder: GraphBuilder, project: Project,
                  duration: float) -> str:
+    from . import audio as audio_mod
     from .audio import AudioInput, build_mix
     solo = any(t.solo for t in project.tracks if t.kind == "audio")
     inputs: List[AudioInput] = []
@@ -812,10 +813,7 @@ def _build_audio(builder: GraphBuilder, project: Project,
                 continue
             if not clip.enabled or not clip.path or clip.audio.muted:
                 continue
-            has_audio = (clip.kind == "audio"
-                         or bool(clip.meta.get("has_audio",
-                                               clip.kind == "video")))
-            if not has_audio:
+            if not audio_mod.clip_has_audio(clip):
                 continue
             idx = builder.clip_input(clip)
             inputs.append(AudioInput(clip, idx, max(0.0, clip.src_in),

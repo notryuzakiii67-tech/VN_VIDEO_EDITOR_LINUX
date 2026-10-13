@@ -443,6 +443,37 @@ def t_transitions():
                       f"{sum(mid) / 3:.0f} vs {sum(plain_mid) / 3:.0f} per channel")
 
 
+@test("audio follows the media, not the stored flag")
+def t_audio_flag():
+    """A silent clip must still export with ``audio=True``.
+
+    ``has_audio`` used to default to "yes" for every video clip, so a project
+    whose clips carry no sound referenced an audio stream that did not exist and
+    the whole export failed with "Error binding filtergraph inputs/outputs".
+    """
+    silent = make_source("src_noaudio.mp4", 320, 180, 2.0, audio=False)
+    loud = make_source("src_audio.mp4", 320, 180, 2.0, audio=True)
+    cases = [("silent, flag unset", silent, None, False),
+             ("silent, stale flag true", silent, True, False),
+             ("sound, flag unset", loud, None, True),
+             ("sound, stale flag false", loud, False, True)]
+    for i, (tag, src, flag, expect) in enumerate(cases):
+        p = base_project()
+        a = add_asset(p, src)
+        c = add_video(p, a, 0.0, 1.5)
+        if flag is None:
+            c.meta.pop("has_audio", None)
+        else:
+            c.meta["has_audio"] = flag
+        name = f"audioflag{i}.mp4"
+        res = render(p, name)
+        if not check(res.ok, f"{tag}: export failed",
+                     res.error):
+            continue
+        ok, why = ok_output(TMP / name, 1.4, 540, 960, expect)
+        check(ok, f"{tag}: {why}")
+
+
 @test("effects stack")
 def t_effects():
     src = make_source("src9.mp4", 480, 270, 4.0)
