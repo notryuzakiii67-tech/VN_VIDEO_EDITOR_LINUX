@@ -886,7 +886,8 @@ def build_full_graph(project: Project, opts: RenderOptions,
             back_col="&HA0000000", bold=False, outline=2.5, shadow=0.0,
             align=2, margin_v=int(oh * 0.06))
         add_caption_events(builder.ass_builder, captions, "Caption",
-                           offset=-start)
+                           offset=-start, font="Bebas Neue",
+                           size=ow * 0.052, max_width=ow * 0.9)
     if builder.ass_builder.events:
         ass_path = os.path.join(builder.tempdir(), "overlay.ass")
         try:
@@ -1239,7 +1240,9 @@ def render_frame(project: Project, t: float, width: int, height: int,
                               primary="&H00FFFFFF",
                               outline_col="&H00000000", outline=2.5, align=2,
                               margin_v=int(builder.oh * 0.06))
-            add_caption_events(ab, caps, st, offset=0.0)
+            add_caption_events(ab, caps, st, offset=0.0, font="Bebas Neue",
+                               size=builder.oh * 0.052,
+                               max_width=builder.ow * 0.9)
         ass_path = os.path.join(builder.tempdir(), "scrub.ass")
         try:
             Path(ass_path).write_text(ab.build(), "utf-8")

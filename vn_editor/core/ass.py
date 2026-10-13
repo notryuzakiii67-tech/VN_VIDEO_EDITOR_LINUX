@@ -184,6 +184,9 @@ class AssBuilder:
         self.styles: List[str] = []
         self._style_names: set = set()
         self.events: List[TextEvent] = []
+        #: clip id -> the text as wrapped for that clip's style, so the style
+        #: is fitted to the same lines the events actually draw.
+        self.wrapped: Dict[str, str] = {}
 
     def add_style(self, name: str, **kw) -> str:
         if name in self._style_names:
@@ -393,7 +396,7 @@ def add_text_clip(builder: AssBuilder, clip: Clip, style_name: str,
         _add_typewriter(builder, clip, style_name, timeline_offset, tp)
         return
 
-    text = tp.text if tp.text else " "
+    text = builder.wrapped.get(clip.id) or (tp.text if tp.text else " ")
     if not animated:
         ov = _base_override(clip, style_name, 0.0)
         ov += (f"\\pos({num(clip.transform.x * builder.width, 4)},"
@@ -432,7 +435,7 @@ def add_text_clip(builder: AssBuilder, clip: Clip, style_name: str,
 
 def _add_typewriter(builder: AssBuilder, clip: Clip, style_name: str,
                     timeline_offset: float, tp: TextProps) -> None:
-    text = tp.text or " "
+    text = builder.wrapped.get(clip.id) or (tp.text or " ")
     chars = max(1, len(text))
     steps = min(chars, 60)
     step_dur = clip.duration / steps
@@ -468,9 +471,12 @@ def text_style_for(builder: AssBuilder, clip: Clip, index: int) -> str:
     avail = max(64.0, builder.width * max(0.2, min(1.0, tp.max_width)))
     avail -= max(0.0, outline) * 2.2 + max(0.0, tp.shadow) * 2.0
     try:
-        from .fonts import fit_size, libass_scale
-        size = fit_size(tp.text or " ", tp.font, size, avail,
-                        tp.letter_spacing, min_size=builder.height * 0.012)
+        from .fonts import fit_wrapped, libass_scale
+        text, size = fit_wrapped(tp.text or " ", tp.font, size, avail,
+                                 tp.letter_spacing,
+                                 getattr(tp, "max_lines", 3),
+                                 min_size=builder.height * 0.012)
+        builder.wrapped[clip.id] = text
         # libass measures Fontsize as the font's ascender-descender span, while
         # TextProps.size is an em size: convert so the preview and the export
         # agree with the inspector.
@@ -819,11 +825,27 @@ def sticker_clips(project) -> List[Clip]:
 
 
 def add_caption_events(builder: AssBuilder, captions: Sequence[Dict[str, Any]],
-                       style_name: str, offset: float = 0.0) -> None:
+                       style_name: str, offset: float = 0.0,
+                       font: str = "", size: float = 0.0,
+                       max_width: float = 0.0,
+                       max_lines: int = 2) -> None:
+    """Emit subtitle events, wrapping each line to the caption style.
+
+    A subtitle is the one text element that is always long, and the caption
+    style is shared, so it cannot widen itself: without the wrap a sentence
+    simply runs off both edges of the frame.
+    """
     for cap in captions:
         start = float(cap.get("start", 0.0)) + offset
         end = float(cap.get("end", start + 1.0)) + offset
         text = str(cap.get("text", "")).strip()
         if not text or end <= start:
             continue
+        if font and size > 0 and max_width > 0 and "\n" not in text:
+            try:
+                from .fonts import fit_wrapped
+                text, _ = fit_wrapped(text, font, size, max_width, 0.0,
+                                      max_lines)
+            except Exception:
+                pass
         builder.events.append(TextEvent(start, end, style_name, text))

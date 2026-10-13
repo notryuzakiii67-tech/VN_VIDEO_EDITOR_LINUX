@@ -243,6 +243,84 @@ def scrub_png(project, t: float, out: str, w: int = 160, h: int = 90) -> Path:
     return o
 
 
+def frame_samples(png: Path, size: int = 32):
+    """Downscaled RGB samples of a still, or ``None`` if it cannot be read."""
+    raw = TMP / "samples.rgb"
+    r = sh([ff.TOOLCHAIN.ffmpeg, "-y", "-v", "error", "-i", str(png),
+            "-vf", f"scale={size}:{size}", "-f", "rawvideo", "-pix_fmt",
+            "rgb24", str(raw)], binary=True)
+    if r.returncode != 0 or not raw.exists():
+        return None
+    data = raw.read_bytes()
+    return [float(b) for b in data] if data else None
+
+
+def blend_ratio(mixed, hold, incoming):
+    """How much of ``mixed`` is the outgoing clip: 1.0 held, 0.0 incoming.
+
+    The frame is projected onto the line between the outgoing clip's held last
+    frame and the incoming clip's frame at the same time, which is the only
+    thing a cross-fade moves along.
+    """
+    num = den = 0.0
+    for m, h, i in zip(mixed, hold, incoming):
+        d = h - i
+        num += (m - i) * d
+        den += d * d
+    if den < 1e-6:
+        return None
+    return num / den
+
+
+def ink_extent(png: Path, w: int = 270, h: int = 480, thresh: int = 100):
+    """Bounding box of the bright pixels of a still (a caption on a dark canvas).
+
+    Measured on one frame rather than against a second render: two renders of
+    the same project can differ by a couple of levels everywhere, which would
+    turn the whole frame into "ink".
+    """
+    raw = TMP / "ink.raw"
+    r = sh([ff.TOOLCHAIN.ffmpeg, "-y", "-v", "error", "-i", str(png),
+            "-vf", f"scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "rgb24",
+            str(raw)], binary=True)
+    if r.returncode != 0 or not raw.exists():
+        return None
+    data = raw.read_bytes()
+    if len(data) < w * h * 3:
+        return None
+    x0, y0, x1, y1, n = w, h, -1, -1, 0
+    for i in range(0, w * h * 3, 3):
+        if data[i] + data[i + 1] + data[i + 2] > thresh:
+            px, py = (i // 3) % w, (i // 3) // w
+            x0, x1 = min(x0, px), max(x1, px)
+            y0, y1 = min(y0, py), max(y1, py)
+            n += 1
+    return (x0, x1, y0, y1, n) if n else None
+
+
+def ink_box(a: Path, b: Path, w: int = 54, h: int = 96):
+    """Bounding box (plus pixel count) of what differs between two stills."""
+    ra, rb = TMP / "ink_a.raw", TMP / "ink_b.raw"
+    for src, dst in ((a, ra), (b, rb)):
+        r = sh([ff.TOOLCHAIN.ffmpeg, "-y", "-v", "error", "-i", str(src),
+                "-vf", f"scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                str(dst)], binary=True)
+        if r.returncode != 0:
+            return None
+    da, db = ra.read_bytes(), rb.read_bytes()
+    if not da or len(da) != len(db):
+        return None
+    x0, y0, x1, y1, n = w, h, -1, -1, 0
+    for i in range(0, len(da) - 2, 3):
+        if (abs(da[i] - db[i]) + abs(da[i + 1] - db[i + 1])
+                + abs(da[i + 2] - db[i + 2])) > 40:
+            px, py = (i // 3) % w, (i // 3) // w
+            x0, x1 = min(x0, px), max(x1, px)
+            y0, y1 = min(y0, py), max(y1, py)
+            n += 1
+    return (x0, x1, y0, y1, n) if n else None
+
+
 def frame_diff(a: Path, b: Path) -> float:
     """Mean absolute channel difference between two stills (0…255)."""
     if not (a.exists() and b.exists()):
@@ -500,6 +578,143 @@ def t_transitions():
                 check(sum(mid) < sum(plain_mid) * 0.6,
                       "dip to black did not darken the frame",
                       f"{sum(mid) / 3:.0f} vs {sum(plain_mid) / 3:.0f} per channel")
+
+
+@test("long captions wrap instead of shrinking away")
+def t_text_wrap():
+    # A one-line caption has to shrink until the whole sentence fits, which for
+    # a POV caption means tiny text in the middle of a 1080-wide frame.  VN
+    # breaks it into a few big lines instead, and so does this.
+    from vn_editor.core.fonts import fit_size, fit_wrapped, metrics_for_font
+    text = "POV: YOU ARE HIM AND THE CREEPER IS RIGHT BEHIND YOU"
+    avail = 540 * 0.9
+    metrics = metrics_for_font("Bebas Neue")
+    one = fit_size(text, "Bebas Neue", 200.0, avail)
+    wrapped, size = fit_wrapped(text, "Bebas Neue", 200.0, avail, max_lines=3)
+    lines = wrapped.splitlines()
+    check(size > one * 2.0, "wrapping did not make the caption any bigger",
+          f"{size:.1f} px on {len(lines)} lines vs {one:.1f} px on one line")
+    check(1 < len(lines) <= 3, "wrong number of wrapped lines", str(len(lines)))
+    widest = max(metrics.text_width(ln, size) for ln in lines)
+    check(widest <= avail + 1.0, "a wrapped line still overflows its budget",
+          f"{widest:.1f} px vs {avail:.0f} px")
+
+    # …and the drawn caption has to stay inside the frame, with the style
+    # actually fitted to the wrapped lines rather than the raw text.
+    def build(max_lines):
+        p = base_project()
+        tt = in_track(p, "text")
+        c = Clip(kind="text", track_id=tt.id, start=0.0, duration=1.0)
+        c.text = TextProps(text=text, font="Bebas Neue", size=200,
+                           max_width=0.75, max_lines=max_lines)
+        p.add_clip(c, tt)
+        return p, c
+
+    boxes = {}
+    for max_lines in (1, 3):
+        proj, clip = build(max_lines)
+        if not check(render(proj, f"wrap_{max_lines}.mp4", audio=False).ok,
+                     f"caption render failed (max_lines={max_lines})"):
+            continue
+        still = frame_at(TMP / f"wrap_{max_lines}.mp4", 0.5,
+                         f"wrap_{max_lines}.png")
+        box = ink_extent(still)
+        if not check(box is not None,
+                     f"nothing was drawn (max_lines={max_lines})"):
+            continue
+        x0, x1, y0, y1, n = box
+        check(x0 >= 2 and x1 <= 267 and y0 >= 2 and y1 <= 477,
+              f"the caption is not inside the frame (max_lines={max_lines})",
+              f"ink box x {x0}…{x1} of 270, y {y0}…{y1} of 480")
+        boxes[max_lines] = (x0, x1, y0, y1, n, clip.meta.get("effective_size"))
+    if 1 in boxes and 3 in boxes:
+        # The wrapped caption is drawn bigger, so its marks are taller than the
+        # one-line version's, which is the whole point of wrapping.
+        check(boxes[3][5] and boxes[1][5] and boxes[3][5] > boxes[1][5] * 1.8,
+              "the wrapped caption was not drawn any larger",
+              "style size %.1f px vs %.1f px on one line"
+              % (boxes[3][5] or 0, boxes[1][5] or 0))
+        check((boxes[3][3] - boxes[3][2]) > (boxes[1][3] - boxes[1][2]) * 2,
+              "the wrapped caption did not use more of the frame's height",
+              "ink height %d vs %d rows"
+              % (boxes[3][3] - boxes[3][2], boxes[1][3] - boxes[1][2]))
+
+
+@test("transitions cross-fade between the clips")
+def t_transition_blend():
+    # The outgoing clip's last frame is held for the transition and mixed with
+    # the incoming clip, so the mix has to walk from 1 (all outgoing) to 0 (all
+    # incoming) across the window.  A transition that renders as a hard cut
+    # fails at one end; one that fades through a blank held frame fails in the
+    # middle, because nothing between the two clips would match either.
+    src = make_source("blend_a.mp4", 320, 240, 2.0)
+    other = make_green_clip("blend_b.mp4", 320, 240, 2.0)
+
+    def build(key):
+        p = base_project()
+        a, b = add_asset(p, src), add_asset(p, other)
+        c1 = add_video(p, a, 0.0, 1.0)
+        add_video(p, b, 1.0, 1.0)
+        if key:
+            c1.transition_out = Transition(key, 0.4, "out")
+        return p
+
+    if not check(render(build(None), "blin_none.mp4").ok,
+                 "plain two-clip render failed"):
+        return
+    if not check(render(build("fade"), "blin_fade.mp4").ok,
+                 "fade transition render failed"):
+        return
+    plain, fade = TMP / "blin_none.mp4", TMP / "blin_fade.mp4"
+
+    # Sample away from frame boundaries: the clip ends at 1.0 s, so a seek to
+    # 0.9667 s can land on the first frame of the *next* clip, which would make
+    # the outgoing frame the incoming one and quietly invert the measurement.
+    hold = frame_samples(frame_at(plain, 0.9, "blin_hold.png"))
+    if not check(hold is not None, "could not read the outgoing frame"):
+        return
+    ratios = []
+    for i, t in enumerate((1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35)):
+        inc = frame_samples(frame_at(plain, t, f"blin_b{i}.png"))
+        mix = frame_samples(frame_at(fade, t, f"blin_f{i}.png"))
+        if inc is None or mix is None:
+            check(False, f"could not read the transition frames at {t}s")
+            return
+        r = blend_ratio(mix, hold, inc)
+        if r is not None:
+            ratios.append((t, r))
+    if not check(len(ratios) >= 6, "too few transition samples",
+                 f"{len(ratios)} of 7"):
+        return
+    first_t, first = ratios[0]
+    last_t, last = ratios[-1]
+    check(first > 0.6, "the transition does not start on the outgoing clip",
+          f"mix at {first_t}s = {first:.2f}, want > 0.60")
+    check(last < 0.4, "the transition does not finish on the incoming clip",
+          f"mix at {last_t}s = {last:.2f}, want < 0.40")
+    worst = max((b - a for (_, a), (_, b) in zip(ratios, ratios[1:])),
+                default=0.0)
+    check(worst < 0.12, "the transition mix is not progressive",
+          f"largest step back towards the outgoing clip = {worst:.2f}")
+    reached = min(r for _, r in ratios)
+    check(reached < 0.3 and max(r for _, r in ratios) > 0.8,
+          "the transition never visits both clips",
+          "mix range = %.2f…%.2f" % (reached, max(r for _, r in ratios)))
+
+    # dip_black is the other easy one to fake: a hard cut also "changes the
+    # picture", but only a real dip goes dark in the middle of the window.
+    if check(render(build("dip_black"), "blin_dip.mp4").ok,
+             "dip_black render failed"):
+        dip = TMP / "blin_dip.mp4"
+        mid = frame_samples(frame_at(dip, 1.2, "blin_dip_mid.png"))
+        inc = frame_samples(frame_at(plain, 1.2, "blin_dip_b.png"))
+        if mid and inc and hold:
+            luma = lambda v: sum(v) / max(1, len(v))
+            dark = luma(mid)
+            ref = min(luma(inc), luma(hold))
+            check(dark < ref * 0.5,
+                  "dip_black does not go dark in the middle of the window",
+                  "luma mid = %.1f vs %.1f for the clips" % (dark, ref))
 
 
 @test("audio follows the media, not the stored flag")

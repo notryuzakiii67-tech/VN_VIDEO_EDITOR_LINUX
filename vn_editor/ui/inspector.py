@@ -1338,6 +1338,14 @@ class TextPage(BasePage):
         self.maxw.valueChanged.connect(lambda v: self._set_text_prop("max_width", v))
         self.maxw.editingFinished.connect(self.ctx.end_gesture)
         s2.add(RowField("Wrap width", self.maxw))
+        self.max_lines = QSpinBox()
+        self.max_lines.setRange(1, 5)
+        self.max_lines.setToolTip(
+            "Long captions wrap into up to this many lines, which keeps the\n"
+            "text much larger than shrinking the whole sentence onto one line.")
+        self.max_lines.valueChanged.connect(
+            lambda v: self._set_text_prop("max_lines", int(v)))
+        s2.add(RowField("Max lines", self.max_lines))
         style_row = QHBoxLayout()
         self.bold = IconButton("text", "Bold", 28, 16, checkable=True)
         self.bold.toggled.connect(lambda on: self._set_text_prop("bold", on))
@@ -1471,9 +1479,9 @@ class TextPage(BasePage):
         self._body.setVisible(True)
         tp = clip.text
         widgets = [self.text_edit, self.font_combo, self.size, self.maxw,
-                   self.bold, self.italic, self.underline, self.letter,
-                   self.line_sp, self.outline_w, self.shadow, self.bg_cb,
-                   self.anim_combo, self.anim_in, self.autofit_cb]
+                   self.max_lines, self.bold, self.italic, self.underline,
+                   self.letter, self.line_sp, self.outline_w, self.shadow,
+                   self.bg_cb, self.anim_combo, self.anim_in, self.autofit_cb]
         for w in widgets:
             w.blockSignals(True)
         self.text_edit.setPlainText(tp.text)
@@ -1482,6 +1490,7 @@ class TextPage(BasePage):
             self.font_combo.setCurrentIndex(idx)
         self.size.set_value(tp.size)
         self.maxw.set_value(tp.max_width)
+        self.max_lines.setValue(int(getattr(tp, "max_lines", 3)))
         self.bold.setChecked(tp.bold)
         self.italic.setChecked(tp.italic)
         self.underline.setChecked(tp.underline)

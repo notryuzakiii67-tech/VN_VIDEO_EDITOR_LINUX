@@ -280,6 +280,64 @@ def fit_size(text: str, font: str, size: float, max_width: float,
     return max(min_size, scaled)
 
 
+def wrap_balanced(text: str, font: str, size: float, max_width: float,
+                  letter_spacing: float, lines: int) -> str:
+    """Wrap into at most ``lines`` lines, as evenly as the words allow.
+
+    The width budget is bisected until the greedy wrap needs no more than
+    ``lines`` lines.  Wrapping at the widest budget that still fits gives the
+    evenest split greedy wrapping can produce, which is what keeps a two-line
+    caption from being one long line and one short one.
+    """
+    if lines <= 1:
+        return text
+    # The search has to reach the width at which the whole text is one line,
+    # otherwise a split that only fits after the size is scaled down is never
+    # found and ``max_lines=2`` would silently behave like ``max_lines=1``.
+    m = metrics_for_font(font)
+    natural = m.text_width(text.replace("\n", " "), size, letter_spacing)
+    lo, hi = 0.0, max(natural, max_width, 1.0) * 1.02
+    best = text
+    for _ in range(14):
+        mid = (lo + hi) / 2.0
+        candidate = wrap_text(text, font, size, mid, letter_spacing)
+        if candidate.count("\n") + 1 <= lines:
+            best, hi = candidate, mid
+        else:
+            lo = mid
+    return best
+
+
+def fit_wrapped(text: str, font: str, size: float, max_width: float,
+                letter_spacing: float = 0.0, max_lines: int = 3,
+                min_size: float = 8.0) -> Tuple[str, float]:
+    """Wrap ``text`` and fit it, returning ``(wrapped, size)``.
+
+    One line of a long caption has to shrink until it fits, which can make it
+    unreadably small; two or three lines keep the same words much larger.  The
+    split with the largest resulting size wins, and ties go to fewer lines so
+    short captions stay on one line.  Explicit newlines are respected as hard
+    breaks and the text is only shrunk.
+    """
+    if not text.strip():
+        return text, size
+    best_text = text
+    best_size = fit_size(text, font, size, max_width, letter_spacing, min_size)
+    if "\n" in text or max_lines <= 1:
+        return best_text, best_size
+    limit = max(2, int(max_lines))
+    for lines in range(2, limit + 1):
+        wrapped = wrap_balanced(text, font, size, max_width, letter_spacing,
+                                lines)
+        if wrapped.count("\n") + 1 > lines:
+            continue          # a single word is longer than the whole budget
+        fitted = fit_size(wrapped, font, size, max_width, letter_spacing,
+                          min_size)
+        if fitted > best_size + 0.5:
+            best_text, best_size = wrapped, fitted
+    return best_text, best_size
+
+
 def wrap_text(text: str, font: str, size: float, max_width: float,
               letter_spacing: float = 0.0) -> str:
     """Greedy word wrap into ``max_width`` (used when auto-fit is off)."""

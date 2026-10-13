@@ -252,7 +252,7 @@ when this build of FFmpeg actually provides them.
 ## Tests
 
 ```bash
-python tests/test_render.py                  # 34 engine/render checks (~40 s)
+python tests/test_render.py                  # 36 engine/render checks (~40 s)
 python tools/feature_audit.py                # renders every catalogue entry (~35 s)
 python tools/export_check.py                 # the POV-short workflow, verified
 python tools/gui_smoke.py                    # 26 headless GUI checks + screenshots
@@ -273,6 +273,21 @@ track exports normally with audio enabled (this used to fail outright with
 "Error binding filtergraph inputs/outputs" because the mix referenced a stream
 that was never there), and a stale ``has_audio`` flag is overridden by what the
 file actually contains.
+
+Text is checked in the rendered pixels, not just in the layout maths. A caption
+is fitted to a width budget, wrapped into up to three lines and then measured in
+the exported frame: the ink has to sit inside the frame with a margin and the
+wrapped version has to be drawn larger than the one-line version. That check
+found a real bug — the render subprocesses were never told where the bundled
+fonts live, so libass fell back to a different, wider face and drew a caption
+sized at 406 px 531 px wide, clipped by both edges of the frame. Preview and
+export agreed with each other the whole time, which is exactly why comparing
+them was not enough.
+
+`feature_audit.py` also checks that a transition *blends*: it measures how much
+of a frame is the outgoing clip's held frame versus the incoming clip across the
+transition window, and requires the mix to walk from 1 to 0. A hard cut fails at
+one end; a fade through a blank held frame fails in the middle.
 
 The audio controls are not trusted to look plausible either. `feature_audit.py`
 renders each one over a lavfi fixture (tones, a hiss bed, a short blip followed

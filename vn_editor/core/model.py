@@ -365,6 +365,7 @@ class TextProps:
     gradient: bool = False
     gradient_color: str = "#ff0055"
     max_width: float = 1.0               # fraction of canvas width
+    max_lines: int = 3                   # wrap limit for long text
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

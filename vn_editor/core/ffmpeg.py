@@ -196,6 +196,33 @@ class RunResult:
         return "\n".join(txt[-lines:])
 
 
+_ENV_CACHE: Optional[dict] = None
+_ENV_LOCK = threading.Lock()
+
+
+def ffmpeg_env() -> dict:
+    """Environment for ffmpeg, with the bundled fonts visible to libass.
+
+    Without ``FONTCONFIG_FILE`` every ``ass``/``subtitles`` filter run resolves
+    a family like "Bebas Neue" to whatever the system falls back to.  On a
+    machine that does not have the font installed that is a different, much
+    wider face: a caption the layout engine sized at 406 px was measured coming
+    out 531 px wide and clipped by both edges of the frame.
+    """
+    global _ENV_CACHE
+    if _ENV_CACHE is None:
+        with _ENV_LOCK:
+            if _ENV_CACHE is None:
+                env = dict(os.environ)
+                try:
+                    from .ass import fontconfig_file
+                    env["FONTCONFIG_FILE"] = str(fontconfig_file())
+                except Exception:
+                    pass
+                _ENV_CACHE = env
+    return _ENV_CACHE
+
+
 def run(args: Sequence[str], timeout: float = 60.0,
         text: bool = True) -> RunResult:
     """Run ffmpeg/ffprobe (or any argv) and capture the result.
@@ -205,7 +232,7 @@ def run(args: Sequence[str], timeout: float = 60.0,
     """
     argv = [str(a) for a in args]
     kwargs = dict(capture_output=True, timeout=timeout,
-                  creationflags=_CREATE_NO_WINDOW)
+                  creationflags=_CREATE_NO_WINDOW, env=ffmpeg_env())
     if text:
         kwargs.update(encoding="utf-8", errors="replace")
     try:
@@ -251,6 +278,7 @@ def popen_ffmpeg(args: Sequence[str], **kw) -> subprocess.Popen:
         raise RuntimeError("ffmpeg executable not found")
     kw.setdefault("stdin", subprocess.DEVNULL)
     kw.setdefault("creationflags", _CREATE_NO_WINDOW)
+    kw.setdefault("env", ffmpeg_env())
     if sys.platform != "win32":
         kw.setdefault("start_new_session", True)
     return subprocess.Popen([str(binary), "-hide_banner", "-nostdin", *args], **kw)
