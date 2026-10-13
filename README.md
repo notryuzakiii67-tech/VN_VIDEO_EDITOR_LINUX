@@ -144,8 +144,14 @@ Everything below is implemented and exercised by the test suites in `tests/` and
   local speech-to-text if you have whisper installed
 
 **Audio**
-- Per-clip volume, fades in/out, pan, pitch, mute and solo
-- Volume keyframes, beat detection with snapping, J/L cuts via fades
+- Per-clip volume, pan (stereo balance), mute and solo
+- Fades in/out with four shapes (linear, smooth, gentle, quick), plus J/L-cut
+  chips; volume keyframes, beat detection with snapping
+- Pitch shift independent of speed, reverse, three-band EQ, bass and treble
+  boost, high/low-pass, compressor, denoise, echo, reverb, stereo widening and
+  loudness normalisation — each one measured by `tools/feature_audit.py`
+  (for example denoise removes ~15 dB of a −21 dB hiss, echo adds a −25 dB
+  repeat where a plain render is silent)
 - 42 generated sound effects plus your own files
 
 **Export**
@@ -246,7 +252,7 @@ when this build of FFmpeg actually provides them.
 ## Tests
 
 ```bash
-python tests/test_render.py                  # 30 engine/render checks (~38 s)
+python tests/test_render.py                  # 34 engine/render checks (~40 s)
 python tools/feature_audit.py                # renders every catalogue entry (~35 s)
 python tools/export_check.py                 # the POV-short workflow, verified
 python tools/gui_smoke.py                    # 26 headless GUI checks + screenshots
@@ -267,6 +273,14 @@ track exports normally with audio enabled (this used to fail outright with
 "Error binding filtergraph inputs/outputs" because the mix referenced a stream
 that was never there), and a stale ``has_audio`` flag is overridden by what the
 file actually contains.
+
+The audio controls are not trusted to look plausible either. `feature_audit.py`
+renders each one over a lavfi fixture (tones, a hiss bed, a short blip followed
+by silence for echo tails) and measures the written file with `astats`, so a
+slider that moves without changing the sound fails the suite. Three real bugs
+came out of that: the pitch slider did nothing at 1.0× speed, denoise was
+pinned at a −32 dB noise floor and removed almost nothing, and `aecho`'s default
+`in_gain` of 0.6 meant adding an echo quietly ducked the direct sound.
 
 `tools/export_check.py` walks the primary workflow — 16:9 gameplay into a 9:16
 canvas, zoomed, sped up 1.5x, with Bebas Neue captions, a sticker and three
