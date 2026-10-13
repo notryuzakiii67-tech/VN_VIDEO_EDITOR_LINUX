@@ -212,6 +212,31 @@ def main() -> int:
     check("preview renders frames while scrubbing", scrub)
     check("preview screenshot", lambda: shot("03_preview"))
 
+    def playback():
+        frames = []
+        widget = win.preview.widget
+        orig = widget.set_scrub_image
+
+        def spy(img, t):
+            frames.append(t)
+            return orig(img, t)
+        widget.set_scrub_image = spy
+        win.seek(0.2)
+        settle(400)
+        win.toggle_play()
+        settle(2200)
+        win.toggle_play()
+        settle(150)
+        widget.set_scrub_image = orig
+        _assert(len(frames) >= 30,
+                f"only {len(frames)} frames were displayed during playback")
+        gaps = [frames[i + 1] - frames[i] for i in range(len(frames) - 1)]
+        step = 1.0 / 30.0
+        bad = [g for g in gaps if abs(g - step) > 0.008]
+        _assert(len(bad) < len(gaps) * 0.25,
+                f"{len(bad)}/{len(gaps)} frame gaps are off the project fps")
+    check("real-time playback decodes and shows frames", playback)
+
     def frame_step():
         t0 = win.ctx.playhead()
         win.step_frame(1)
@@ -379,6 +404,12 @@ def main() -> int:
         img = QImage(str(tmp))
         _assert(not img.isNull(), "frame is unreadable")
     check("single-frame render (offscreen)", render_frame_now)
+
+    def shutdown():
+        win.shutdown_workers()
+        win.close()
+        settle(300)
+    check("clean shutdown (workers joined)", shutdown)
 
     print("\n== result ==")
     failed = [r for r in RESULTS if not r[1]]

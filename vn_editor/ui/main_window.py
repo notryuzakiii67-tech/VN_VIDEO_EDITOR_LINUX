@@ -339,6 +339,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("VN Studio — Video Editor")
         self.resize(1500, 940)
         self.setMinimumSize(1080, 700)
+        app = QApplication.instance()
+        if app is not None:
+            # make sure the decode/thumbnail threads are joined even when the
+            # process exits without closing the window
+            app.aboutToQuit.connect(self.shutdown_workers)
         self._build()
         self._install_shortcuts()
         self.after_change("")
@@ -1334,13 +1339,17 @@ class MainWindow(QMainWindow):
             return
         super().keyPressEvent(ev)
 
+    def shutdown_workers(self) -> None:
+        for widget, method in ((self.preview, "shutdown"),
+                               (self.media, "shutdown")):
+            try:
+                getattr(widget, method)()
+            except Exception:
+                pass
+
     def closeEvent(self, ev) -> None:
         if not self._confirm_discard():
             ev.ignore()
             return
-        try:
-            self.preview.shutdown()
-            self.media.shutdown()
-        except Exception:
-            pass
+        self.shutdown_workers()
         ev.accept()
