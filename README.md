@@ -271,10 +271,23 @@ watching output, and both now have regression tests.
 
 The scrub preview is held to the export **frame by frame**, including inside a
 transition: it used to draw the hard cut there while the export drew the blend,
-so the two disagreed by exactly the thing you were looking at.  The preview now
-compiles the same run the export does and keeps the frame under the playhead
-from it.  That check fails on the old behaviour with the preview matching the
-cut frame to within 0.1 of 255.
+so the two disagreed by exactly the thing you were looking at.  A transition
+frame only ever mixes the outgoing clip's *held* last frame with the incoming
+clip's frame at that instant, so the preview seeks one still per side and runs
+the export's own transition chain over them: the picture is the export's to
+within the encoder's noise, and a scrub inside a transition costs what any other
+scrub costs instead of decoding both clips from their starts.  Two things that
+check caught: the outgoing still has to be seeked to the last frame the clip
+actually *displays* (``-ss`` hands back the first frame at or after the target,
+so half a frame later decodes a frame that is not in the clip), and the layer
+has to be stamped on a microsecond timebase — at 1.05 s a 1/30 stamp is 31.5
+ticks, and the half-tick rounding used to land the frame *after* the canvas
+frame it belongs to, so the overlay dropped it and a dip through black
+previewed as a bare background for most of its window.  Both are regression
+tests now, and both fail loudly on the old behaviour (the out-of-clip seek reads
+3.8 against a 2.5 tolerance, the bare background 52.7).  Drawing the cut frame
+instead of the blend, which is what the preview did before any of this, reads
+100.8 — and the old preview matched the cut frame to within 0.1 of 255.
 
 Playback gets the same treatment, because starting in the wrong place is the
 quietest way for a preview to lie.  Pressing play with the playhead at 3.5 s

@@ -1234,37 +1234,76 @@ def _transition_at(project: Project, track: Track, t: float):
     return None
 
 
+def _transition_still(builder: GraphBuilder, project: Project, clip: Clip,
+                      when: float) -> Optional[str]:
+    """One seeked frame of ``clip``, ready to be held for a transition."""
+    idx = builder.add_input(_frame_input_args(clip, clip.src_time(when)))
+    return _frame_layer(builder, project, clip, idx, clip.local_time(when),
+                        head_frame=True)
+
+
 def _transition_layer(builder: GraphBuilder, project: Project, pair, t: float
                       ) -> Optional[str]:
     """Composite frame of a transition at ``t``.
 
-    The export draws the join with ``xfade`` over layers built by
-    ``build_layer`` (which is what supplies the held handle frames), so the
-    preview builds the two layers the same way and runs the very same
-    ``trans_mod.build`` chain.  A wipe in the preview is then the wipe the
-    export writes, not an approximation of it.
+    A transition frame is a function of three things: the outgoing clip's held
+    frame, the incoming clip's frame at that instant, and the progress through
+    the window.  The export draws it with ``xfade`` over layers whose handle is
+    the outgoing clip's *last frame repeated*, so both sides can be produced as
+    single seeked stills and fed through the very same ``trans_mod.build``
+    chain — exact, and as cheap as any other scrub frame.
     """
     run, first, joined, k, spec, d = pair
+    prev, nxt = run[k - 1], run[k]
     start = max(0.0, run[0].start)
-    local = t - start
-    if local < 0.0:
+    join = start + joined
+    if t < start:
         return None
-    layers = []
-    for n, clip in enumerate((run[k - 1], run[k])):
-        idx = builder.clip_input(clip)
-        layers.append(builder.build_layer(clip, idx, d if n == 0 else 0.0))
+    fps = max(1.0, builder.fps)
+    lead = 0.3                     # keeps the transition clear of the stream head
+
+    # The outgoing clip is past its out-point for the whole window, and the
+    # export holds its last frame there; the incoming clip is on its own clock.
+    # ``-ss`` hands back the first frame whose pts is *at or after* the
+    # target, so each seek has to land inside the frame that is on screen: the
+    # outgoing clip's last displayed frame starts one frame before its end
+    # (half a frame later already decodes the next one, which is not part of
+    # the clip), and the incoming clip's frame at ``t`` is the one the export
+    # paints at that instant.
+    a_lab = _transition_still(builder, project, prev,
+                              max(prev.start, prev.end - 1.0 / fps - 1e-3))
+    b_lab = _transition_still(builder, project, nxt,
+                              max(nxt.start, t - 0.5 / fps))
+    if a_lab is None or b_lab is None:
+        return None
+
+    frames = int((lead + d + 0.25) * fps) + 3
+    held = []
+    for lab in (a_lab, b_lab):
+        out = builder.labels()
+        builder.frag(f"[{lab}]loop=loop={frames}:size=1:start=0,"
+                     f"fps={_fmt(fps)}[{out}]")
+        held.append(out)
+
     merged = builder.labels()
-    frag = trans_mod.build(spec.kind, joined, d, layers[0], layers[1], merged,
-                           builder.labels, builder.ow, builder.oh,
-                           builder.fps)
+    frag = trans_mod.build(spec.kind, lead, d, held[0], held[1], merged,
+                           builder.labels, builder.ow, builder.oh, fps)
     if frag is None:
         return None
     builder.frag(frag)
-    # Keep exactly the frame under the playhead and put it on the absolute
-    # clock, so it composites onto the accumulator like any other layer.
+
+    # Keep exactly the frame under the playhead, on the absolute clock, so it
+    # composites onto the accumulator like any other layer.
+    at = lead + max(0.0, t - join)
     out = builder.labels()
-    builder.frag(f"[{merged}]trim=start={_fmt(local)}:"
-                 f"end={_fmt(local + 1.5 / max(1.0, builder.fps))},"
+    # ``settb`` first: the trim keeps the composite's own (frame-rate) timebase,
+    # and stamping on it rounds — 1.05 s at 1/30 is 31.5 ticks, so the layer
+    # landed a frame *after* the canvas frame and the overlay drew the bare
+    # background instead of the dip.  On a microsecond timebase the stamp is
+    # exact.
+    builder.frag(f"[{merged}]trim=start={_fmt(at)}:"
+                 f"end={_fmt(at + 1.5 / fps)},"
+                 f"settb=1/1000000,"
                  f"setpts=PTS-STARTPTS+{_fmt(t)}/TB[{out}]")
     return out
 
@@ -1283,9 +1322,15 @@ def render_frame(project: Project, t: float, width: int, height: int,
     # single frame we keep is the one libass evaluates for that moment.  Text,
     # captions and stickers are authored on the timeline clock, so nothing has
     # to be re-timed per frame.
+    # ``settb=1/1000000`` before the stamp is load-bearing: on the frame-rate
+    # timebase a stamp like 1.05 s is 31.5 ticks, and the layer and the canvas
+    # can round it in opposite directions.  The frame that lands half a tick
+    # late is composited *after* the canvas frame it belongs to, so the overlay
+    # drops it and the preview shows the bare background for that instant.
     builder.frag(f"color=c={color_to_ff(bg)}:s={builder.ow}x{builder.oh}:"
                  f"r={_fmt(builder.fps)}:d={_fmt(max(0.2, t + 0.1))},"
-                 f"format={CANVAS_FMT},setpts=PTS+{_fmt(t)}/TB[{acc}]")
+                 f"format={CANVAS_FMT},settb=1/1000000,"
+                 f"setpts=PTS+{_fmt(t)}/TB[{acc}]")
 
     for tr in _visible_tracks(project):
         if tr.kind == "text":
@@ -1490,7 +1535,10 @@ def _frame_layer(builder: GraphBuilder, project: Project, clip: Clip,
                  f"y='{_fmt(y * builder.oh)}-h/2':format=auto[{out}]")
     if at_time > 0.002:
         stamped = builder.labels()
-        builder.frag(f"[{out}]setpts=PTS+{_fmt(at_time)}/TB[{stamped}]")
+        # Same microsecond timebase as the canvas: an exact stamp is what keeps
+        # the layer and the accumulating frame on the same PTS (see render_frame).
+        builder.frag(f"[{out}]settb=1/1000000,"
+                     f"setpts=PTS+{_fmt(at_time)}/TB[{stamped}]")
         return stamped
     return out
 

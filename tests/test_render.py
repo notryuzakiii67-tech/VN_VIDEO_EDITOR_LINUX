@@ -738,25 +738,36 @@ def t_scrub_transition():
             c1.transition_out = Transition(key, 0.4, "out")
         return p
 
-    faded, plain = build("fade"), build(None)
-    if not check(render(faded, "scrb_fade.mp4", width=320, height=240).ok,
-                 "transition export failed"):
-        return
-    if not check(render(plain, "scrb_plain.mp4", width=320, height=240).ok,
-                 "plain export failed"):
-        return
+    faded, plain, dipped = build("fade"), build(None), build("dip_black")
+    for name, project in (("fade", faded), ("dip_black", dipped), ("plain", plain)):
+        if not check(render(project, f"scrb_{name}.mp4", width=320,
+                            height=240).ok, f"{name} export failed"):
+            return
 
-    # 1.0 s is the join, so the window is 1.0…1.4 s.
-    worst, where = 0.0, 0.0
-    for i, t in enumerate((0.3, 0.9, 1.05, 1.15, 1.25, 1.35, 1.5, 1.8)):
-        exp = frame_at(TMP / "scrb_fade.mp4", t, f"scrb_e{i}.png")
-        prev = scrub_png(faded, t, f"scrb_p{i}.png", 320, 240)
-        d = frame_diff(prev, exp)
-        if d > worst:
-            worst, where = d, t
-    check(0.0 <= worst < 6.0,
-          "the scrub preview disagrees with the export in the transition",
-          f"largest difference {worst:.1f} at {where}s")
+    # 1.0 s is the join, so the window is 1.0…1.4 s.  The tolerance is tight on
+    # purpose: every frame of the window has to come out of the transition, so
+    # a preview that mixes the wrong *side* of it fails here.  Measured 1.4 at
+    # 1.25s; seeking half a frame later than the outgoing clip's last displayed
+    # frame (which lands the still on a frame the clip does not contain) reads
+    # 3.8 at 1.05s, and drawing the cut instead of the blend reads 50.
+    #
+    # Both kinds of transition are checked because they reach the composite
+    # differently: a cross-fade is one ``xfade`` filter over the two clips,
+    # while a dip runs ``fade``/``trim``/``concat`` and hands the overlay a
+    # stream on its own timebase.  At 1.05 s that stamp is 31.5 ticks of 1/30,
+    # so a half-tick rounding put the layer a frame late and the preview drew
+    # the *bare background* where the export drew the dip.
+    for kind, project in (("fade", faded), ("dip_black", dipped)):
+        worst, where = 0.0, 0.0
+        for i, t in enumerate((0.3, 0.9, 1.05, 1.15, 1.25, 1.35, 1.5, 1.8)):
+            exp = frame_at(TMP / f"scrb_{kind}.mp4", t, f"scrb_e{i}.png")
+            prev = scrub_png(project, t, f"scrb_p{i}.png", 320, 240)
+            d = frame_diff(prev, exp)
+            if d > worst:
+                worst, where = d, t
+        check(0.0 <= worst < 2.5,
+              f"the scrub preview disagrees with the export in the {kind}",
+              f"largest difference {worst:.1f} at {where}s")
 
     cut = frame_at(TMP / "scrb_plain.mp4", 1.15, "scrb_cut.png")
     mid = scrub_png(faded, 1.15, "scrb_mid.png", 320, 240)
