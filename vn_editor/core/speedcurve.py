@@ -24,6 +24,28 @@ from .model import Clip, SpeedCurve
 MIN_SPEED = 0.05
 MAX_SPEED = 20.0
 
+#: Curve presets offered in the Speed panel — VN's six presets plus two extra
+#: ramps.  Each entry is (label, [(position 0..1, speed), …]); an empty point
+#: list clears the curve.  This lives in the core so the timeline, the renderer
+#: and the inspector all read the same table.
+CURVE_PRESETS: List[Tuple[str, List[Tuple[float, float]]]] = [
+    ("None", []),
+    ("Slow Fast Slow", [(0.0, 0.5), (0.5, 2.0), (1.0, 0.5)]),
+    ("Fast Slow Fast", [(0.0, 2.0), (0.5, 0.5), (1.0, 2.0)]),
+    ("Slow Start", [(0.0, 0.4), (0.35, 1.0), (1.0, 1.6)]),
+    ("Slow End", [(0.0, 1.6), (0.65, 1.0), (1.0, 0.4)]),
+    ("Slow Middle", [(0.0, 2.0), (0.4, 0.4), (0.6, 0.4), (1.0, 2.0)]),
+    ("Velocity Ramp", [(0.0, 0.6), (0.15, 0.8), (0.6, 3.0), (1.0, 3.0)]),
+    ("Bullet Time", [(0.0, 1.6), (0.3, 0.35), (0.7, 0.35), (1.0, 1.8)]),
+]
+
+
+def curve_preset_points(name: str) -> List[Tuple[float, float]]:
+    for label, pts in CURVE_PRESETS:
+        if label == name:
+            return list(pts)
+    return []
+
 
 def clamp_speed(s: float) -> float:
     return max(MIN_SPEED, min(MAX_SPEED, s))

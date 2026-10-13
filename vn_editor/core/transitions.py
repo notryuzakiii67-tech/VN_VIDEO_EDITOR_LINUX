@@ -218,12 +218,15 @@ def build(key: str, offset: float, duration: float, a: str, b: str,
             f"offset={num(off, 4)}[{out}]")
 
     if name == "shake_dissolve":
+        # xfade needs both sides at the same size, so the shrunken frame is
+        # cropped on both branches and only one of them wobbles.
         a1, b1 = counter(), counter()
+        box = "crop=w='iw-8':h='ih-8'"
         return (
-            f"[{a}]crop=w='iw-8':h='ih-8':"
+            f"[{a}]{box}:"
             f"x='4+4*sin(40*(t-{num(off, 4)}))':"
             f"y='4+4*cos(37*(t-{num(off, 4)}))'[{a1}];"
-            f"[{b}]null[{b1}];"
+            f"[{b}]{box}:x=4:y=4[{b1}];"
             f"[{a1}][{b1}]xfade=transition=dissolve:duration={num(d, 4)}:"
             f"offset={num(off, 4)}[{out}]")
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .expr import color_to_ff, kf_expr, num
@@ -141,9 +142,13 @@ _register(EffectSpec(
 _register(EffectSpec(
     "tint", "Tint", "Basic",
     [Param("tint", "Magenta / Green", 0.0, -1.0, 1.0, 0.01)],
+    # A magenta/green cast: `colorbalance`'s midtone slider is far too weak to
+    # see on real footage, so the mid point of the red, green and blue curves is
+    # shifted instead (negative slider = magenta, positive = green).
     lambda fx, a, d: (
-        [f"colorbalance=gm={num(-_pval(fx, 'tint', 0.0) * 0.25)}:"
-         f"rm={num(_pval(fx, 'tint', 0.0) * 0.12)}:bm={num(_pval(fx, 'tint', 0.0) * 0.12)}"]
+        [f"curves=r='0/0 0.5/{num(0.5 + 0.2 * _pval(fx, 'tint', 0.0), 4)} 1/1':"
+         f"g='0/0 0.5/{num(0.5 - 0.2 * _pval(fx, 'tint', 0.0), 4)} 1/1':"
+         f"b='0/0 0.5/{num(0.5 + 0.2 * _pval(fx, 'tint', 0.0), 4)} 1/1'"]
         if abs(_pval(fx, "tint", 0.0)) > 1e-4 else []),
     "Green / magenta tint"))
 
@@ -160,13 +165,18 @@ def _build_levels(fx, anims, dur) -> List[str]:
     b = _pval(fx, "black", 0.0)
     w = _pval(fx, "white", 1.0)
     g = _pval(fx, "gamma", 1.0)
-    return [f"colorlevels=rimin={num(max(0.0, min(0.9, b)))}:"
-            f"gimin={num(max(0.0, min(0.9, b)))}:"
-            f"bimin={num(max(0.0, min(0.9, b)))}:"
-            f"rimax={num(max(0.1, min(1.0, w)))}:"
-            f"gimax={num(max(0.1, min(1.0, w)))}:"
-            f"bimax={num(max(0.1, min(1.0, w)))}:"
-            f"gamma={num(max(0.1, g))}"]
+    # `colorlevels` has no gamma option in current FFmpeg (it was removed), so
+    # the black/white points go there and gamma is applied with `eq`.
+    black = max(0.0, min(0.9, b))
+    white = max(black + 0.05, min(1.0, w))
+    gamma = max(0.1, min(4.0, g))
+    frags: List[str] = []
+    if black > 1e-4 or white < 0.9999:
+        frags.append("colorlevels=" + ":".join(
+            f"{ch}imin={num(black)}:{ch}imax={num(white)}" for ch in "rgb"))
+    if abs(gamma - 1.0) > 1e-3:
+        frags.append(f"eq=gamma={num(gamma)}")
+    return frags or ["null"]
 
 
 _register(EffectSpec(
@@ -266,9 +276,12 @@ _register(EffectSpec(
      Param("saturation", "Saturation", 0.5, 0.0, 1.0, 0.01),
      Param("lightness", "Lightness", 0.0, -1.0, 1.0, 0.01),
      Param("mix", "Mix", 0.5, 0.0, 1.0, 0.01)],
+    # The slider reads -1 (darker) … +1 (lighter); FFmpeg wants 0 … 1 and
+    # treats 0.5 as "leave the lightness alone", so -1 maps to 0 and +1 to 1.
     lambda fx, a, d: [f"colorize=hue={num(_pval(fx, 'hue', 0.0))}:"
                       f"saturation={num(_pval(fx, 'saturation', 0.5))}:"
-                      f"lightness={num(_pval(fx, 'lightness', 0.0))}:"
+                      f"lightness="
+                      f"{num(max(0.0, min(1.0, (_pval(fx, 'lightness', 0.0) + 1.0) / 2.0)))}:"
                       f"mix={num(_pval(fx, 'mix', 0.5))}"],
     "Tint the image with a single colour"))
 
@@ -447,7 +460,8 @@ _register(EffectSpec(
     "stabilize", "Stabilise", "Repair",
     [Param("shakiness", "Shakiness", 5.0, 1.0, 10.0, 1.0),
      Param("smoothing", "Smoothing", 15.0, 2.0, 60.0, 1.0)],
-    None, "Two-pass video stabilisation"))
+    None, "Two-pass video stabilisation",
+    needs=("vidstabdetect", "vidstabtransform")))
 EFFECTS["stabilize"].build = None
 
 _register(EffectSpec(
@@ -461,7 +475,7 @@ _register(EffectSpec(
     "lut", "LUT (.cube)", "Colour",
     [Param("file", "LUT file", 0.0, kind="file"),
      Param("intensity", "Intensity", 1.0, 0.0, 1.0, 0.01)],
-    None, "Load a .cube 3D LUT"))
+    None, "Load a .cube 3D LUT", needs=("lut3d",)))
 EFFECTS["lut"].build = None
 
 
@@ -567,7 +581,8 @@ def build_grade(name: str, intensity: float = 1.0) -> List[str]:
 #  Multi-branch effects (need split/blend)
 # --------------------------------------------------------------------------- #
 
-MULTIBRANCH = {"glow", "vhs", "old_film", "neon", "cartoon", "scanline", "mirror"}
+MULTIBRANCH = {"glow", "vhs", "old_film", "neon", "cartoon", "scanline",
+              "mirror", "lut"}
 
 
 def build_multibranch(fx: FilterInstance, in_label: str, out_label: str,
@@ -578,6 +593,21 @@ def build_multibranch(fx: FilterInstance, in_label: str, out_label: str,
 
     def c(n=1):
         return [counter() for _ in range(n)]
+
+    if kind == "lut":
+        path = p.get("file")
+        intensity = max(0.0, min(1.0, _pval(p, "intensity", 1.0)))
+        if not path or intensity <= 0.004:
+            return f"[{in_label}]null[{out_label}]"
+        from .ffmpeg import escape_filter_path
+        lut = (f"lut3d=file={escape_filter_path(str(path))}:interp=tetrahedral")
+        if intensity >= 0.996:
+            return f"[{in_label}]{lut}[{out_label}]"
+        a1, a2, ab = c(3)
+        return (f"[{in_label}]split=2[{a1}][{a2}];"
+                f"[{a2}]{lut}[{ab}];"
+                f"[{a1}][{ab}]blend=all_mode=normal:all_opacity={num(intensity)}"
+                f"[{out_label}]")
 
     if kind == "glow":
         amount = max(0.0, min(1.0, _pval(p, "amount", 0.5)))
@@ -659,6 +689,88 @@ def build_multibranch(fx: FilterInstance, in_label: str, out_label: str,
     return f"[{in_label}]null[{out_label}]"
 
 
+# --------------------------------------------------------------------------- #
+#  Stabilisation — two passes through video-stab
+# --------------------------------------------------------------------------- #
+
+STABILIZE_DEFAULTS = {"shakiness": 5.0, "smoothing": 15.0}
+
+
+def stabilize_instance(clip) -> Optional[FilterInstance]:
+    """The clip's enabled stabilise effect, if it has one."""
+    for fx in clip.filters:
+        if fx.enabled and fx.kind == "stabilize":
+            return fx
+    return None
+
+
+def stabilize_trf(clip) -> Optional[str]:
+    """Run (once) the detection pass and return the transform file path.
+
+    ``vidstabdetect`` writes a ``.trf`` describing how each frame has to be
+    moved; ``vidstabtransform`` then applies it.  Analysis is cached per source
+    file, trim and settings, so scrubbing the timeline does not re-analyse the
+    clip on every preview frame.
+    """
+    from . import ffmpeg as _ff
+    from .project import cache_dir
+
+    fx = stabilize_instance(clip)
+    if fx is None or not clip.path:
+        return None
+    src = Path(clip.path) if not isinstance(clip.path, Path) else clip.path
+    if not src.exists():
+        return None
+    shakiness = int(max(1, min(10, round(_pval(fx.params, "shakiness", 5.0)))))
+    try:
+        mtime = int(src.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    signature = (str(src), mtime, round(clip.start, 3),
+                 round(clip.duration, 3), shakiness)
+    key = f"{clip.id}-{abs(hash(signature))}"
+    folder = Path(cache_dir()) / "stab"
+    folder.mkdir(parents=True, exist_ok=True)
+    trf = folder / f"{key}.trf"
+    if trf.exists() and trf.stat().st_size > 32:
+        return str(trf)
+
+    tmp_trf = folder / f"{key}.part"
+    args = ["-y", "-v", "error", "-nostdin"]
+    if clip.start > 1e-3:
+        args += ["-ss", _ff.fmt_num(clip.start)]
+    if clip.duration > 1e-3:
+        args += ["-t", _ff.fmt_num(clip.duration)]
+    args += ["-i", str(src), "-an", "-vf",
+             f"vidstabdetect=shakiness={shakiness}:accuracy=15:"
+             f"result={_ff.escape_filter_path(str(tmp_trf))}",
+             "-f", "null", "-"]
+    result = _ff.ffmpeg(*args, timeout=max(90.0, clip.duration * 6.0))
+    if result.ok and tmp_trf.exists() and tmp_trf.stat().st_size > 32:
+        tmp_trf.replace(trf)
+        return str(trf)
+    try:
+        tmp_trf.unlink()
+    except OSError:
+        pass
+    return None
+
+
+def stabilize_filter(clip) -> Optional[str]:
+    """The ``vidstabtransform`` fragment for a clip, or None if unavailable."""
+    from .ffmpeg import escape_filter_path
+
+    fx = stabilize_instance(clip)
+    if fx is None:
+        return None
+    trf = stabilize_trf(clip)
+    if not trf:
+        return None
+    smoothing = int(max(0, min(1000, round(_pval(fx.params, "smoothing", 15.0)))))
+    return (f"vidstabtransform=input={escape_filter_path(trf)}:"
+            f"smoothing={smoothing}:optzoom=1:interpol=bicubic")
+
+
 def build_effect_chain(clip, counter) -> List[str]:
     """Filter fragments for every effect on a clip (excluding multi-branch)."""
     frags: List[str] = []
@@ -671,18 +783,6 @@ def build_effect_chain(clip, counter) -> List[str]:
             continue
         spec = EFFECTS.get(fx.kind)
         if spec is None or fx.kind in MULTIBRANCH:
-            continue
-        if fx.kind == "lut":
-            path = fx.params.get("file")
-            if not path:
-                continue
-            from .ffmpeg import escape_filter_path
-            intensity = float(fx.params.get("intensity", 1.0))
-            if intensity >= 0.999:
-                frags.append(f"lut3d=file={escape_filter_path(str(path))}")
-            else:
-                frags.append(f"lut3d=file={escape_filter_path(str(path))}:"
-                             f"interp=tetrahedral")
             continue
         if fx.kind == "stabilize":
             continue

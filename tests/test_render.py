@@ -177,6 +177,36 @@ def avg_rgb(png: Path):
     return (sum(data[0::3]) / n, sum(data[1::3]) / n, sum(data[2::3]) / n)
 
 
+def scrub_png(project, t: float, out: str, w: int = 160, h: int = 90) -> Path:
+    """One composited frame from the interactive (scrub) path."""
+    o = TMP / out
+    R.render_frame(project, t, w, h, str(o))
+    return o
+
+
+def frame_diff(a: Path, b: Path) -> float:
+    """Mean absolute channel difference between two stills (0…255)."""
+    if not (a.exists() and b.exists()):
+        return -1.0
+    ra, rb = TMP / "diff_a.rgb", TMP / "diff_b.rgb"
+    for src, dst in ((a, ra), (b, rb)):
+        r = sh([ff.TOOLCHAIN.ffmpeg, "-y", "-v", "error", "-i", str(src),
+                "-vf", "scale=64:64", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                str(dst)], binary=True)
+        if r.returncode != 0:
+            return -1.0
+    da, db = ra.read_bytes(), rb.read_bytes()
+    if not da or len(da) != len(db):
+        return -1.0
+    step = max(1, len(da) // 3000)
+    total = count = 0
+    for i in range(0, len(da) - 3, step * 3):
+        total += abs(da[i] - db[i]) + abs(da[i + 1] - db[i + 1]) \
+            + abs(da[i + 2] - db[i + 2])
+        count += 3
+    return total / max(1, count)
+
+
 TESTS = []
 
 
@@ -430,6 +460,186 @@ def t_masks():
             continue
         ok, why = ok_output(TMP / f"mask_{shape}.mp4", 0.9)
         check(ok, f"mask '{shape}': {why}")
+
+    # A mask that renders but changes nothing is still broken: the coverage
+    # plane has to reach alphamerge, so compare a masked frame with a bare one.
+    src2 = make_source("src10.mp4", 480, 270, 3.0)
+    plain = base_project()
+    ovp = in_track(plain, "overlay")
+    cp = add_video(plain, add_asset(plain, src2), 0.0, 1.0, track=ovp)
+    masked = base_project()
+    ovm = in_track(masked, "overlay")
+    cm = add_video(masked, add_asset(masked, src2), 0.0, 1.0, track=ovm)
+    cm.mask = MaskProps(shape="ellipse", width=0.5, height=0.5, feather=0.02)
+    a_img = scrub_png(plain, 0.5, "mask_plain.png")
+    b_img = scrub_png(masked, 0.5, "mask_applied.png")
+    diff = frame_diff(a_img, b_img)
+    check(diff > 3.0, "mask has no effect on the scrub frame",
+          f"frame difference {diff:.2f} — the alpha plane is not reaching "
+          f"alphamerge")
+    plain_out = render(plain, "mask_export_plain.mp4", audio=False)
+    masked_out = render(masked, "mask_export_ellipse.mp4", audio=False)
+    if plain_out.ok and masked_out.ok:
+        pa = frame_at(TMP / "mask_export_plain.mp4", 0.5, "mask_exp_plain.png")
+        pb = frame_at(TMP / "mask_export_ellipse.mp4", 0.5, "mask_exp.png")
+        diff = frame_diff(pa, pb)
+        check(diff > 3.0, "mask has no effect on the exported video",
+              f"frame difference {diff:.2f}")
+    else:
+        check(False, "mask export comparison could not render")
+
+
+@test("scrub preview shows the frame at the requested time")
+def t_scrub_time():
+    # testsrc draws a running timestamp, so a wrong frame is easy to spot: the
+    # preview must match the export at the *same* time and not at another.
+    src = make_source("counter.mp4", 320, 180, 3.0, 30, audio=False)
+    p = base_project(320, 180, 30.0)
+    p.settings.background = "#000000"
+    add_video(p, add_asset(p, src), 0.0, 3.0)
+    opts = R.options_from_settings(p)
+    opts.width, opts.height = 320, 180
+    opts.audio = False
+    res = R.render(p, str(TMP / "counter_export.mp4"), opts)
+    check(res.ok, "counter export failed", res.error)
+
+    times = (0.5, 1.5, 2.5, 2.9)
+    exports = {}
+    for t in times:
+        exports[t] = frame_at(TMP / "counter_export.mp4", t,
+                              f"counter_{t}.png")
+    for t in times:
+        prev = TMP / f"scrub_{t}.png"
+        R.render_frame(p, t, 320, 180, str(prev))
+        same = frame_diff(prev, exports[t])
+        nearest = min((frame_diff(prev, exports[u]), u) for u in times)
+        check(same < 6.0,
+              f"scrub frame at {t}s does not match the export at the same time",
+              f"difference {same:.2f}")
+        check(abs(nearest[1] - t) < 0.2,
+              f"scrub frame at {t}s is actually the frame at {nearest[1]}s",
+              f"closest match is {nearest[1]}s (difference {nearest[0]:.2f})")
+
+
+@test("stabilisation reduces camera shake")
+def t_stabilize():
+    still = TMP / "stab_still.png"
+    sh([ff.TOOLCHAIN.ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i",
+        "rgbtestsrc=size=420x420", "-frames:v", "1", str(still)])
+    shaky = TMP / "shaky.mp4"
+    sh([ff.TOOLCHAIN.ffmpeg, "-y", "-v", "error", "-loop", "1",
+        "-framerate", "30", "-t", "2.0", "-i", str(still), "-vf",
+        "crop=320:320:x='50+40*sin(n/1.3)':y='50+40*cos(n/1.9)'",
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        str(shaky)])
+
+    def shake(stabilized: bool) -> float:
+        p = base_project(320, 320, 30.0)
+        a = add_asset(p, shaky)
+        c = add_video(p, a, 0.0, 2.0)
+        c.meta["src_w"], c.meta["src_h"] = 320, 320
+        if stabilized:
+            c.add_filter("stabilize", {"shakiness": 8.0, "smoothing": 20.0})
+        f1 = scrub_png(p, 1.0, f"stab_{stabilized}_a.png")
+        f2 = scrub_png(p, 1.0 + 1 / 30, f"stab_{stabilized}_b.png")
+        return frame_diff(f1, f2)
+
+    free, held = shake(False), shake(True)
+    check(held >= 0 and free > 0.2, "stabilisation test could not measure shake",
+          f"raw shake {free:.2f}")
+    check(held < free * 0.8, "stabilisation did not reduce the shake",
+          f"{free:.2f} → {held:.2f} per frame")
+
+
+@test("LUT intensity")
+def t_lut():
+    src = make_source("src16x9.mp4", 640, 360, 6.0)
+    cube = TMP / "invert.cube"
+    rows = ["TITLE \"invert\"", "LUT_3D_SIZE 2", "DOMAIN_MIN 0 0 0",
+            "DOMAIN_MAX 1 1 1"]
+    for r in (0.0, 1.0):
+        for g in (0.0, 1.0):
+            for b in (0.0, 1.0):
+                rows.append(f"{1 - r:.6f} {1 - g:.6f} {1 - b:.6f}")
+    cube.write_text("\n".join(rows) + "\n")
+
+    frames = {}
+    for amount in (0.0, 0.5, 1.0):
+        p = base_project()
+        a = add_asset(p, src)
+        c = add_video(p, a, 0.0, 1.0)
+        c.add_filter("lut", {"file": str(cube), "intensity": amount})
+        frames[amount] = scrub_png(p, 0.5, f"lut_{amount}.png")
+    base_img = frames[0.0]
+    full = frame_diff(base_img, frames[1.0])
+    half = frame_diff(base_img, frames[0.5])
+    check(full > 5.0, "a full-strength LUT barely changes the frame",
+          f"difference {full:.2f}")
+    check(0.5 < half < full * 0.85, "LUT intensity does not scale the effect",
+          f"0.5 → {half:.2f}, 1.0 → {full:.2f}")
+    plain = base_project()
+    add_video(plain, add_asset(plain, src), 0.0, 1.0)
+    check(frame_diff(scrub_png(plain, 0.5, "lut_none.png"), base_img) < 0.4,
+          "intensity 0 should be a no-op")
+
+    # the export path has to apply it too, not just the scrub preview
+    outs = {}
+    for amount in (0.0, 1.0):
+        p = base_project()
+        c = add_video(p, add_asset(p, src), 0.0, 1.0)
+        c.add_filter("lut", {"file": str(cube), "intensity": amount})
+        res = render(p, f"lut_export_{amount}.mp4", audio=False)
+        if not res.ok:
+            check(False, f"LUT export failed at intensity {amount}", res.error)
+            return
+        outs[amount] = frame_at(TMP / f"lut_export_{amount}.mp4", 0.5,
+                                f"lut_x_{amount}.png")
+    diff = frame_diff(outs[0.0], outs[1.0])
+    check(diff > 5.0, "the exported video ignores the LUT", f"difference {diff:.2f}")
+
+
+@test("tint slider is visible")
+def t_tint():
+    src = make_source("src16x9.mp4", 640, 360, 6.0)
+    plain = base_project()
+    add_video(plain, add_asset(plain, src), 0.0, 1.0)
+    bare = scrub_png(plain, 0.5, "tint_none.png")
+    for amount, label in ((-0.5, "magenta"), (0.5, "green")):
+        p = base_project()
+        c = add_video(p, add_asset(p, src), 0.0, 1.0)
+        c.add_filter("tint", {"tint": amount})
+        diff = frame_diff(bare, scrub_png(p, 0.5, f"tint_{label}.png"))
+        check(diff > 0.75, f"tint {label} is invisible (difference {diff:.2f})")
+
+
+@test("levels effect")
+def t_levels():
+    src = make_source("src16x9.mp4", 640, 360, 6.0)
+    plain = base_project()
+    add_video(plain, add_asset(plain, src), 0.0, 1.0)
+    bare = scrub_png(plain, 0.5, "levels_none.png")
+    for params, label in (({"black": 0.3, "white": 0.8}, "black/white"),
+                          ({"gamma": 0.5}, "gamma"),
+                          ({"black": 0.2, "white": 0.9, "gamma": 1.8}, "all")):
+        p = base_project()
+        c = add_video(p, add_asset(p, src), 0.0, 1.0)
+        c.add_filter("levels", dict(params))
+        diff = frame_diff(bare, scrub_png(p, 0.5, f"levels_{label.split('/')[0]}.png"))
+        check(diff > 1.0, f"levels ({label}) has no effect", f"{diff:.2f}")
+
+
+@test("speed-curve presets render")
+def t_curve_presets():
+    from vn_editor.core.speedcurve import CURVE_PRESETS
+    src = make_source("src16x9.mp4", 480, 270, 4.0)
+    for name, pts in CURVE_PRESETS:
+        p = base_project(270, 480, 30.0)
+        c = add_video(p, add_asset(p, src), 0.0, 1.5)
+        if pts:
+            c.speed_curve = SpeedCurve([tuple(x) for x in pts], name)
+            c.duration = 1.5
+        res = render(p, f"curve_{abs(hash(name)) % 9999}.mp4", audio=False)
+        check(res.ok, f"speed curve '{name}' failed", (res.error or "")[-300:])
 
 
 @test("text / captions / stickers via libass")

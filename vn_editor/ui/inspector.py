@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFrame,
                                QToolButton, QVBoxLayout, QWidget)
 
 from ..core import effects as fx_mod
+from ..core import render as render_mod
+from ..core import speedcurve as core_speedcurve
 from ..core.model import (ANIM_PROPS, EASINGS, RESOLUTION_PRESETS,
                           TEXT_ANIMATIONS, Clip, FilterInstance, Keyframe,
                           MaskProps, Project, SpeedCurve, Transform)
@@ -30,16 +32,9 @@ SPEED_PRESETS = [
     ("8x", 8.0),
 ]
 
-CURVE_PRESETS: List[Tuple[str, List[Tuple[float, float]]]] = [
-    ("None", []),
-    ("Slow Fast Slow", [(0.0, 0.5), (0.5, 2.0), (1.0, 0.5)]),
-    ("Fast Slow Fast", [(0.0, 2.0), (0.5, 0.5), (1.0, 2.0)]),
-    ("Slow Start", [(0.0, 0.4), (0.35, 1.0), (1.0, 1.6)]),
-    ("Slow End", [(0.0, 1.6), (0.65, 1.0), (1.0, 0.4)]),
-    ("Slow Middle", [(0.0, 2.0), (0.4, 0.4), (0.6, 0.4), (1.0, 2.0)]),
-    ("Velocity Ramp", [(0.0, 0.6), (0.15, 0.8), (0.6, 3.0), (1.0, 3.0)]),
-    ("Bullet Time", [(0.0, 1.6), (0.3, 0.35), (0.7, 0.35), (1.0, 1.8)]),
-]
+#: Speed-curve presets; the table itself lives in the core so the renderer and
+#: this panel can never disagree about it.
+CURVE_PRESETS = list(core_speedcurve.CURVE_PRESETS)
 
 FIT_MODES = ["fit", "cover", "stretch"]
 BLEND_MODES = ["normal", "screen", "multiply", "overlay", "soft_light",
@@ -1515,8 +1510,7 @@ class TextPage(BasePage):
 # --------------------------------------------------------------------------- #
 
 class MaskPage(BasePage):
-    SHAPES = ["none", "rect", "ellipse", "radial", "linear", "heart", "star",
-              "split"]
+    SHAPES = list(render_mod.MASK_SHAPES)
 
     def __init__(self, ctx, parent=None) -> None:
         super().__init__(ctx, parent)

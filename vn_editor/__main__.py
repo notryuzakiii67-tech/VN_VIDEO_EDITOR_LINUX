@@ -219,6 +219,27 @@ def run_self_test() -> int:
         print(f"Qt            : FAILED ({exc})")
         ok = False
 
+    try:
+        from .core import effects as fx_mod
+        from .core import transitions as tr_mod
+        needed = set()
+        for spec in fx_mod.EFFECTS.values():
+            needed.update(spec.needs)
+        missing_effects = sorted(n for n in needed
+                                 if not ff.filter_available(n))
+        counts = (f"{len(fx_mod.EFFECTS)} effects, "
+                  f"{len(fx_mod.GRADES)} colour looks, "
+                  f"{len(tr_mod.TRANSITIONS)} transitions")
+        if missing_effects:
+            print(f"Editing tools : {counts}")
+            print(f"                MISSING filters: {', '.join(missing_effects)}")
+            ok = False
+        else:
+            print(f"Editing tools : {counts}, all filters available")
+    except Exception as exc:
+        print(f"Editing tools : FAILED ({exc})")
+        ok = False
+
     print("=" * 58)
     print("Everything needed for editing and export is ready."
           if ok else "Some checks failed — see above.")

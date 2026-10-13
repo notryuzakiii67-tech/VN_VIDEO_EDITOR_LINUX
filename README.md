@@ -121,7 +121,8 @@ Everything below is implemented and exercised by the test suites in `tests/` and
 
 **Picture**
 - Position, scale, rotation, flip, crop and fit (fit / cover / stretch)
-- 25 colour looks, 39 effects, chroma key, eight mask shapes with feathering
+- 25 colour looks, 39 effects (including two-pass stabilisation), chroma key,
+  eight mask shapes with feathering, .cube LUTs with an intensity blend
 - Transitions: 65 entries (fades, wipes, slides, spins, circles, composites)
   with adjustable duration and audio crossfade
 - Blend PIP overlays on higher tracks with independent transforms
@@ -162,9 +163,11 @@ Being straight about the limits:
   cutout.** Auto captions depend on you installing whisper locally.
 - **Text wrapping is basic** (explicit newlines and auto-shrink rather than
   balanced rewrapping).
-- **Stabilisation** is not implemented — the effect catalogue lists real FFmpeg
-  filters only, and `vidstab` needs the `vidstabdetect` pass that this build
-  does not ship.
+- **Stabilisation** runs a real two-pass `vidstabdetect` → `vidstabtransform`
+  job. The analysis is cached per clip in `~/.cache/vn-studio/stab`, so the
+  first preview of a stabilised clip pauses for a moment and later ones do not.
+  A clip with stabilisation on is previewed by decoding from the start of the
+  clip rather than seeking, because the transform file is read frame by frame.
 - **QtMultimedia** is only used for audio output; there is no Qt-based video
   playback path, so preview always goes through FFmpeg.
 
@@ -222,13 +225,18 @@ vn_editor/
 The preview and the export share one filtergraph builder, so what you see is
 what you get: the preview pipes raw frames from the same graph at a lower
 resolution, and the frame stills used while scrubbing come from the same code
-path. Filters, effects, masks and overlays are only listed in the UI when this
-build of FFmpeg actually provides them.
+path. `tools/feature_audit.py` proves that shared code by rendering every
+catalogue entry — all 39 effects, 25 colour looks, 65 transitions, 24 text
+animations, 38 stickers, 8 mask shapes and 8 speed curves — and measuring that
+the picture actually changes, so a control that renders but does nothing cannot
+pass unnoticed. Filters, effects, masks and overlays are only listed in the UI
+when this build of FFmpeg actually provides them.
 
 ## Tests
 
 ```bash
-python tests/test_render.py                  # 22 engine/render checks (~30 s)
+python tests/test_render.py                  # 28 engine/render checks (~30 s)
+python tools/feature_audit.py                # renders every catalogue entry (~15 s)
 python tools/export_check.py                 # full MP4 export + verification
 python tools/gui_smoke.py                    # 26 headless GUI checks + screenshots
 python -m vn_editor --self-test              # environment report

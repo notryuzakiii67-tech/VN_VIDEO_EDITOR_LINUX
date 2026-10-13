@@ -172,6 +172,11 @@ def write_png(path: str, pixels) -> bool:
         return False
 
 
+#: Mask shapes understood by :func:`mask_png`; "none" means no mask at all.
+MASK_SHAPES: List[str] = ["none", "rect", "ellipse", "radial", "linear", "heart",
+                          "star", "split"]
+
+
 def mask_png(path: str, shape: str, width: int, height: int, cx: float,
              cy: float, mw: float, mh: float, rotation: float = 0.0,
              feather: float = 0.02, invert: bool = False) -> bool:
@@ -547,10 +552,12 @@ class GraphBuilder:
             mi = self.add_input(["-loop", "1", "-i", png])
             midx = self.labels()
             dur = max(0.03, b - a)
-            self.frag(f"[{mi}:v]format=rgba,scale={mw}:{mh},"
+            # alphamerge takes its alpha from the *luma* of the second input, so
+            # the coverage plane of the mask PNG is extracted first.
+            self.frag(f"[{mi}:v]format=rgba,alphaextract,scale={mw}:{mh},"
                       f"fps={_fmt(self.fps)},loop=loop=-1:size=1:start=0,"
                       f"setpts=N/{_fmt(self.fps)}/TB,"
-                      f"trim=duration={_fmt(dur)},format=rgba[{midx}]")
+                      f"trim=duration={_fmt(dur)},format=gray[{midx}]")
             seg_labels.append(midx)
         if not seg_labels:
             return prev
@@ -567,7 +574,14 @@ class GraphBuilder:
     # -- one visual clip ---------------------------------------------------- #
     def build_layer(self, clip: Clip, index: int, extend: float = 0.0) -> str:
         lab = self.labels()
-        chain = [f"fps={_fmt(self.fps)}", "format=rgba"]
+        # Stabilisation runs on the raw (source-resolution) frames and before
+        # anything converts to rgba — vidstabtransform cannot take a four-plane
+        # input and segfaults on one, so its position here matters.
+        chain = [f"fps={_fmt(self.fps)}"]
+        stab = fx_mod.stabilize_filter(clip)
+        if stab:
+            chain.append(stab)
+        chain.append("format=rgba")
 
         t = clip.transform
         if max(t.crop_l, t.crop_r, t.crop_t, t.crop_b) > 1e-4:
@@ -1120,8 +1134,15 @@ def render_frame(project: Project, t: float, width: int, height: int,
             continue
         rel = clip.local_time(t)
         src_t = clip.src_time(t)
-        idx = builder.add_input(_frame_input_args(clip, src_t))
-        layer = _frame_layer(builder, project, clip, idx, rel)
+        stabilized = (clip.kind == "video" and bool(clip.path)
+                      and not clip.freeze
+                      and fx_mod.stabilize_instance(clip) is not None)
+        read_from = max(0.0, clip.src_in) if stabilized else None
+        idx = builder.add_input(_frame_input_args(clip, src_t, read_from))
+        layer = _frame_layer(
+            builder, project, clip, idx, rel,
+            head_frame=clip.kind == "video" and not stabilized,
+            stab_at=(src_t - read_from) if stabilized else None)
         if layer is None:
             continue
         out = builder.labels()
@@ -1168,18 +1189,41 @@ def render_frame(project: Project, t: float, width: int, height: int,
     return r.ok and os.path.exists(out_path)
 
 
-def _frame_input_args(clip: Clip, src_t: float) -> List[str]:
+def _frame_input_args(clip: Clip, src_t: float,
+                      read_from: Optional[float] = None) -> List[str]:
+    """Input arguments for one layer of a scrubbed frame.
+
+    Stabilisation reads its per-frame transforms in order, so a clip that is
+    stabilised is decoded from the start of the clip instead of seeking
+    straight to the requested frame — the transform file and the decoded
+    frames then stay in step, and the overlay keeps the last decoded frame.
+    """
     if clip.kind in ("image", "sticker"):
         return ["-loop", "1", "-i", clip.path]
     args: List[str] = []
-    if src_t > 0.002:
+    if read_from is not None:
+        # No ``-t`` here: cutting the input short makes FFmpeg tear the
+        # vidstabtransform filter down while frames are still being pulled,
+        # which crashes it.  The single output frame stops the pipeline anyway.
+        if read_from > 0.002:
+            args += ["-ss", f"{read_from:.5f}"]
+    elif src_t > 0.002:
         args += ["-ss", f"{src_t:.5f}"]
     args += ["-i", clip.path]
     return args
 
 
 def _frame_layer(builder: GraphBuilder, project: Project, clip: Clip,
-                 idx: int, rel: float) -> Optional[str]:
+                 idx: int, rel: float, head_frame: bool = False,
+                 stab_at: Optional[float] = None) -> Optional[str]:
+    """One layer of a scrubbed frame.
+
+    ``head_frame`` keeps only the first decoded frame: the caller has seeked
+    straight to the frame it wants, and letting the rest of the clip through
+    would make ``overlay`` pick a much later frame.  ``stab_at`` does the same
+    after stabilisation, which has to see every frame in order to consume its
+    transform file — there the wanted frame is selected by timestamp.
+    """
     t = clip.transform
 
     def prop(name: str) -> float:
@@ -1195,7 +1239,21 @@ def _frame_layer(builder: GraphBuilder, project: Project, clip: Clip,
     if opacity < 0.004:
         return None
 
-    chain: List[str] = [f"fps={_fmt(builder.fps)}", "format=rgba"]
+    # vidstabtransform must see the raw frames, never an rgba stream.
+    chain: List[str] = []
+    if head_frame:
+        chain.append("trim=end_frame=1,setpts=PTS-STARTPTS")
+    chain.append(f"fps={_fmt(builder.fps)}")
+    stab = fx_mod.stabilize_filter(clip)
+    if stab:
+        chain.append(stab)
+    if stab_at is not None and stab_at > 0.002:
+        # Keep exactly the frame the timeline is sitting on (the transforms
+        # before it have already been consumed in order).
+        chain.append(f"trim=start={_fmt(stab_at)}:"
+                     f"end={_fmt(stab_at + 1.0 / max(1.0, builder.fps))}")
+        chain.append("setpts=PTS-STARTPTS")
+    chain.append("format=rgba")
     if max(t.crop_l, t.crop_r, t.crop_t, t.crop_b) > 1e-4:
         cl, cr = min(0.95, max(0.0, t.crop_l)), min(0.95, max(0.0, t.crop_r))
         ct, cb = min(0.95, max(0.0, t.crop_t)), min(0.95, max(0.0, t.crop_b))
