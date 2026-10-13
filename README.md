@@ -252,7 +252,7 @@ when this build of FFmpeg actually provides them.
 ## Tests
 
 ```bash
-python tests/test_render.py                  # 36 engine/render checks (~40 s)
+python tests/test_render.py                  # 37 engine/render checks (~40 s)
 python tools/feature_audit.py                # renders every catalogue entry (~35 s)
 python tools/export_check.py                 # the POV-short workflow, verified
 python tools/gui_smoke.py                    # 26 headless GUI checks + screenshots
@@ -267,6 +267,13 @@ the cut — the outgoing clip's last frame is held for the transition's duration
 while the incoming clip fades in — instead of silently collapsing into a hard
 cut.  Both of those were real bugs, found by these checks rather than by
 watching output, and both now have regression tests.
+
+The scrub preview is held to the export **frame by frame**, including inside a
+transition: it used to draw the hard cut there while the export drew the blend,
+so the two disagreed by exactly the thing you were looking at.  The preview now
+compiles the same run the export does and keeps the frame under the playhead
+from it.  That check fails on the old behaviour with the preview matching the
+cut frame to within 0.1 of 255.
 
 Audio is decided by the media, not by a flag: a clip whose file has no audio
 track exports normally with audio enabled (this used to fail outright with

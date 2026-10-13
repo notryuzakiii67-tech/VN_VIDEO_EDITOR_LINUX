@@ -1179,6 +1179,74 @@ def _cleanup(builder: GraphBuilder) -> None:
 #  Single-frame preview (scrubbing)
 # --------------------------------------------------------------------------- #
 
+def _transition_at(project: Project, track: Track, t: float):
+    """The transition the export would be drawing at ``t``, if any.
+
+    Clips are collected and laid out exactly the way ``_build_run`` lays them
+    out, so the window is the same window: the outgoing clip's last frame is
+    held while the incoming clip blends in over ``[join, join + d]``.
+
+    Returns ``(run, first, joined, index, spec, d)``.
+    """
+    clips = collect_layers(project).get(track.id) or []
+    if len(clips) < 2:
+        return None
+    i = 0
+    while i < len(clips):
+        j = i
+        while j + 1 < len(clips) and _adjacent(clips[j], clips[j + 1]):
+            j += 1
+        run = clips[i:j + 1]
+        start = max(0.0, run[0].start)
+        joined = run[0].duration
+        for k in range(1, len(run)):
+            prev, nxt = run[k - 1], run[k]
+            spec = _transition_between(prev, nxt)
+            if spec is not None:
+                d = max(0.04, min(float(spec.duration), prev.duration * 0.9,
+                                  nxt.duration * 0.9))
+                if start + joined <= t <= start + joined + d:
+                    return run, run[0], joined, k, spec, d
+            joined += nxt.duration
+        i = j + 1
+    return None
+
+
+def _transition_layer(builder: GraphBuilder, project: Project, pair, t: float
+                      ) -> Optional[str]:
+    """Composite frame of a transition at ``t``.
+
+    The export draws the join with ``xfade`` over layers built by
+    ``build_layer`` (which is what supplies the held handle frames), so the
+    preview builds the two layers the same way and runs the very same
+    ``trans_mod.build`` chain.  A wipe in the preview is then the wipe the
+    export writes, not an approximation of it.
+    """
+    run, first, joined, k, spec, d = pair
+    start = max(0.0, run[0].start)
+    local = t - start
+    if local < 0.0:
+        return None
+    layers = []
+    for n, clip in enumerate((run[k - 1], run[k])):
+        idx = builder.clip_input(clip)
+        layers.append(builder.build_layer(clip, idx, d if n == 0 else 0.0))
+    merged = builder.labels()
+    frag = trans_mod.build(spec.kind, joined, d, layers[0], layers[1], merged,
+                           builder.labels, builder.ow, builder.oh,
+                           builder.fps)
+    if frag is None:
+        return None
+    builder.frag(frag)
+    # Keep exactly the frame under the playhead and put it on the absolute
+    # clock, so it composites onto the accumulator like any other layer.
+    out = builder.labels()
+    builder.frag(f"[{merged}]trim=start={_fmt(local)}:"
+                 f"end={_fmt(local + 1.5 / max(1.0, builder.fps))},"
+                 f"setpts=PTS-STARTPTS+{_fmt(t)}/TB[{out}]")
+    return out
+
+
 def render_frame(project: Project, t: float, width: int, height: int,
                  out_path: str,
                  captions: Optional[Sequence[Dict[str, Any]]] = None) -> bool:
@@ -1200,6 +1268,12 @@ def render_frame(project: Project, t: float, width: int, height: int,
     for tr in _visible_tracks(project):
         if tr.kind == "text":
             continue
+        pair = _transition_at(project, tr, t)
+        if pair is not None:
+            layer = _transition_layer(builder, project, pair, t)
+            if layer is not None:
+                acc = builder.composite(acc, layer, pair[1].blend)
+                continue
         clip = tr.clip_at(t)
         if clip is None or not clip.enabled or not _clip_has_video(clip):
             continue

@@ -717,6 +717,55 @@ def t_transition_blend():
                   "luma mid = %.1f vs %.1f for the clips" % (dark, ref))
 
 
+@test("the scrub preview draws the transition, not the cut")
+def t_scrub_transition():
+    # The preview used to ignore transitions completely: with the playhead in
+    # the window it drew the incoming clip at its own time — the *cut* frame —
+    # while the export drew the blend.  That is the one place a preview can lie
+    # about the picture, and the middle of a fade is where it cannot hide, so
+    # the test holds both paths to each other frame by frame and separately
+    # requires the preview to differ from the plain cut.
+    src = make_source("scrb_a.mp4", 320, 240, 2.0)
+    other = make_green_clip("scrb_b.mp4", 320, 240, 2.0)
+
+    def build(key):
+        p = base_project(320, 240, 30.0)
+        p.settings.background = "#101418"
+        a, b = add_asset(p, src), add_asset(p, other)
+        c1 = add_video(p, a, 0.0, 1.0)
+        add_video(p, b, 1.0, 1.0)
+        if key:
+            c1.transition_out = Transition(key, 0.4, "out")
+        return p
+
+    faded, plain = build("fade"), build(None)
+    if not check(render(faded, "scrb_fade.mp4", width=320, height=240).ok,
+                 "transition export failed"):
+        return
+    if not check(render(plain, "scrb_plain.mp4", width=320, height=240).ok,
+                 "plain export failed"):
+        return
+
+    # 1.0 s is the join, so the window is 1.0…1.4 s.
+    worst, where = 0.0, 0.0
+    for i, t in enumerate((0.3, 0.9, 1.05, 1.15, 1.25, 1.35, 1.5, 1.8)):
+        exp = frame_at(TMP / "scrb_fade.mp4", t, f"scrb_e{i}.png")
+        prev = scrub_png(faded, t, f"scrb_p{i}.png", 320, 240)
+        d = frame_diff(prev, exp)
+        if d > worst:
+            worst, where = d, t
+    check(0.0 <= worst < 6.0,
+          "the scrub preview disagrees with the export in the transition",
+          f"largest difference {worst:.1f} at {where}s")
+
+    cut = frame_at(TMP / "scrb_plain.mp4", 1.15, "scrb_cut.png")
+    mid = scrub_png(faded, 1.15, "scrb_mid.png", 320, 240)
+    check(frame_diff(mid, cut) > 12.0,
+          "the preview shows the cut frame instead of the transition",
+          f"preview differs from the cut by only "
+          f"{frame_diff(mid, cut):.1f}")
+
+
 @test("audio follows the media, not the stored flag")
 def t_audio_flag():
     """A silent clip must still export with ``audio=True``.
