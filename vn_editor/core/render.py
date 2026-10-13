@@ -800,7 +800,7 @@ def _handle_after(project: Project, clip: Clip) -> float:
 # --------------------------------------------------------------------------- #
 
 def _build_audio(builder: GraphBuilder, project: Project,
-                 duration: float) -> str:
+                 duration: float, start: float = 0.0) -> str:
     from . import audio as audio_mod
     from .audio import AudioInput, build_mix
     solo = any(t.solo for t in project.tracks if t.kind == "audio")
@@ -813,6 +813,8 @@ def _build_audio(builder: GraphBuilder, project: Project,
                 continue
             if not clip.enabled or not clip.path or clip.audio.muted:
                 continue
+            if clip.end <= start + 1e-4:
+                continue                     # already past when the window opens
             if not audio_mod.clip_has_audio(clip):
                 continue
             idx = builder.clip_input(clip)
@@ -820,7 +822,7 @@ def _build_audio(builder: GraphBuilder, project: Project,
                                      getattr(track, "volume", 1.0)))
     if not inputs:
         return ""
-    graph = build_mix(inputs, duration + 0.5, builder.labels)
+    graph = build_mix(inputs, duration + 0.5, builder.labels, start=start)
     if not graph.strip().endswith("]"):
         return ""
     label = graph.rsplit("[", 1)[1].rstrip("]")
@@ -837,6 +839,7 @@ def build_full_graph(project: Project, opts: RenderOptions,
                      captions: Optional[Sequence[Dict[str, Any]]] = None,
                      ) -> Tuple[List[str], GraphBuilder, float]:
     builder = GraphBuilder(project, opts)
+    builder.timeline_start = max(0.0, start)
     total = project.duration
     if duration <= 0:
         duration = max(0.05, total - start)
@@ -905,7 +908,8 @@ def build_full_graph(project: Project, opts: RenderOptions,
         builder.frag(f"[{acc}]format={opts.pixel_format},setsar=1[{final}]")
         acc = final
 
-    audio_label = _build_audio(builder, project, duration) if opts.audio else ""
+    audio_label = (_build_audio(builder, project, duration,
+                                max(0.0, start)) if opts.audio else "")
     builder.final_label = acc
     builder.audio_label = audio_label
 
@@ -1020,6 +1024,13 @@ def build_audio_pipe_command(project: Project, opts: RenderOptions,
 
 def _build_run(builder: GraphBuilder, project: Project, run: List[Clip],
                acc: str) -> str:
+    # A graph can begin in the middle of the timeline: the preview pipe starts
+    # at the playhead, so everything is placed relative to that window and a run
+    # the window starts inside is cut down to it.
+    window = getattr(builder, "timeline_start", 0.0)
+    head = max(0.0, run[0].start) - window
+    if head + sum(max(0.0, c.duration) for c in run) <= 0.0001:
+        return acc                       # entirely before the window
     layers: List[str] = []
     for i, clip in enumerate(run):
         nxt = run[i + 1] if i + 1 < len(run) else None
@@ -1055,11 +1066,22 @@ def _build_run(builder: GraphBuilder, project: Project, run: List[Clip],
         cur = out
         joined += nxt.duration
 
-    start = max(0.0, run[0].start)
+    if head < 0.0:
+        # The window opens inside this run: drop what is already past.  The
+        # run is one stream by now, so a transition straddling the window is
+        # cut in the right place too.
+        cut = builder.labels()
+        builder.frag(f"[{cur}]trim=start={_fmt(-head)},"
+                     f"setpts=PTS-STARTPTS[{cut}]")
+        cur = cut
+        joined = max(0.0, joined + head)
+        head = 0.0
+    else:
+        head = max(0.0, head)
     placed = builder.labels()
-    builder.frag(f"[{cur}]setpts=PTS-STARTPTS+{_fmt(start)}/TB[{placed}]")
-    enable = (f":enable='between(t,{_fmt(start)},"
-              f"{_fmt(start + joined + 0.05)})'")
+    builder.frag(f"[{cur}]setpts=PTS-STARTPTS+{_fmt(head)}/TB[{placed}]")
+    enable = (f":enable='between(t,{_fmt(head)},"
+              f"{_fmt(head + joined + 0.05)})'")
     return builder.composite(acc, placed, run[0].blend, enable)
 
 

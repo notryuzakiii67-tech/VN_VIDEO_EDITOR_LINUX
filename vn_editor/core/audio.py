@@ -125,6 +125,14 @@ def clip_audio_filters(clip: Clip, counter, src_in: float,
 
     # 3. placement on the timeline + padding to project length
     delay_ms = int(round((clip.start + offset) * 1000))
+    if delay_ms < 0:
+        # The graph opens inside this clip (the preview pipe starts at the
+        # playhead): the part before the window is dropped, because a negative
+        # ``adelay`` is not something FFmpeg will build.  The clip's own fades
+        # and envelopes have already been applied above, on its own clock.
+        post.append(f"atrim=start={num(-delay_ms / 1000.0, 5)}")
+        post.append("asetpts=PTS-STARTPTS")
+        delay_ms = 0
     if delay_ms > 0:
         post.append(f"adelay={delay_ms}|{delay_ms}:all=1")
     post.append("aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo")
@@ -155,7 +163,8 @@ class AudioInput:
 
 
 def build_mix(inputs: Sequence[AudioInput], duration: float, counter,
-              master_volume: float = 1.0, normalize: bool = False) -> str:
+              master_volume: float = 1.0, normalize: bool = False,
+              start: float = 0.0) -> str:
     """Mix all audio inputs into one stereo stream labelled ``[o]``."""
     duration = max(0.05, duration)
     if not inputs:
@@ -167,7 +176,8 @@ def build_mix(inputs: Sequence[AudioInput], duration: float, counter,
     labels: List[str] = []
     for ai in inputs:
         frag = clip_audio_filters(ai.clip, counter, ai.src_in,
-                                  ai.track_volume, max_duration=duration)
+                                  ai.track_volume, offset=-start,
+                                  max_duration=duration)
         labels.append(ai.label if hasattr(ai, "label") else
                       frag.rsplit("[", 1)[1].rstrip("]"))
         frags.append(f"[{ai.index}:a]{frag}")
@@ -225,8 +235,8 @@ def mixdown_wav(project: Project, out_path: str, duration: float,
                 index += 1
     if not inputs:
         return [], []
-    graph = build_mix(inputs, duration + max(0.0, 0.0), counter_iter.next,
-                      master_volume=1.0)
+    graph = build_mix(inputs, duration, counter_iter.next,
+                      master_volume=1.0, start=start)
     argv += ["-filter_complex", graph,
              "-map", "[o]", "-c:a", "pcm_s16le", "-ar", str(SAMPLE_RATE),
              "-ac", "2", str(out_path)]

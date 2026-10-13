@@ -170,8 +170,9 @@ Being straight about the limits:
   complex frame can take a moment on a slow CPU.
 - **No automatic scene detection, no motion tracking, no face tracking, no AI
   cutout.** Auto captions depend on you installing whisper locally.
-- **Text wrapping is basic** (explicit newlines and auto-shrink rather than
-  balanced rewrapping).
+- **Text wrapping is line-based**: it balances lines and fits the box, but it
+  will not hyphenate or break inside a word, so a single very long word still
+  shrinks to fit rather than being split.
 - **Stabilisation** runs a real two-pass `vidstabdetect` → `vidstabtransform`
   job. The analysis is cached per clip in `~/.cache/vn-studio/stab`, so the
   first preview of a stabilised clip pauses for a moment and later ones do not.
@@ -252,7 +253,7 @@ when this build of FFmpeg actually provides them.
 ## Tests
 
 ```bash
-python tests/test_render.py                  # 37 engine/render checks (~40 s)
+python tests/test_render.py                  # 38 engine/render checks (~40 s)
 python tools/feature_audit.py                # renders every catalogue entry (~35 s)
 python tools/export_check.py                 # the POV-short workflow, verified
 python tools/gui_smoke.py                    # 26 headless GUI checks + screenshots
@@ -274,6 +275,15 @@ so the two disagreed by exactly the thing you were looking at.  The preview now
 compiles the same run the export does and keeps the frame under the playhead
 from it.  That check fails on the old behaviour with the preview matching the
 cut frame to within 0.1 of 255.
+
+Playback gets the same treatment, because starting in the wrong place is the
+quietest way for a preview to lie.  Pressing play with the playhead at 3.5 s
+asks for a graph that *begins* at 3.5 s, and only the subtitle timeline used to
+obey that — the clips stayed on the absolute clock, so the pipe replayed the
+edit from 0 while the player labelled the frames with the times it meant to be
+showing.  A red clip (0–3 s), a green one (3–5 s) and a tone in the second makes
+it one frame and one buffer to catch: the check plays from 0.5 s and from 3.5 s
+and requires red-then-green and silence-then-tone.
 
 Audio is decided by the media, not by a flag: a clip whose file has no audio
 track exports normally with audio enabled (this used to fail outright with

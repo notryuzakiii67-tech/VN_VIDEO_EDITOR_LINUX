@@ -766,6 +766,78 @@ def t_scrub_transition():
           f"{frame_diff(mid, cut):.1f}")
 
 
+@test("the preview player starts where the playhead is")
+def t_pipe_start():
+    # Pressing play with the playhead at 3.5 s asks the player for a graph that
+    # begins at 3.5 s.  Only the subtitle timeline used to obey that — the clips
+    # stayed on the absolute clock, so the pipe replayed the edit from 0 while
+    # the player labelled the frames with the times it meant to be showing.
+    # A red/green pair makes that visible in one frame and a tone makes it
+    # audible in one buffer.
+    red, green = TMP / "pipe_red.mp4", TMP / "pipe_green.mp4"
+    for colour, out in (("red", red), ("green", green)):
+        r = sh([ff.TOOLCHAIN.ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i",
+                f"color=c={colour}:s=160x90:d=3:r=30", "-c:v", "libx264",
+                "-pix_fmt", "yuv420p", str(out)])
+        if not check(r.returncode == 0, f"could not build the {colour} clip"):
+            return
+
+    p = base_project(160, 90, 30.0)
+    add_video(p, add_asset(p, red), 0.0, 3.0)
+    add_video(p, add_asset(p, green), 3.0, 2.0)
+    opts = R.options_from_settings(p)
+    opts.width, opts.height, opts.audio = 160, 90, False
+
+    def first_frame(t):
+        argv, _, _ = R.build_pipe_command(p, opts, start=t, duration=0.1)
+        data = sh([ff.TOOLCHAIN.ffmpeg] + argv, binary=True).stdout[:160 * 90 * 3]
+        if len(data) < 160 * 90 * 3:
+            return None
+        n = 160 * 90
+        return tuple(sum(data[i::3]) / n for i in range(3))
+
+    early, late = first_frame(0.5), first_frame(3.5)
+    if not check(early is not None and late is not None,
+                 "the preview pipe produced no frame"):
+        return
+    check(early[0] > 200 and early[1] < 60,
+          "playing from 0.5s does not show the first clip",
+          "mean rgb %.0f/%.0f/%.0f" % early)
+    check(late[1] > 100 and late[0] < 60,
+          "playing from 3.5s shows the start of the timeline, not the second clip",
+          "mean rgb %.0f/%.0f/%.0f" % late)
+
+    # The audio half has the same window to honour, and a clip carrying no
+    # audio at all must not turn the mix into noise or an error.
+    tone = make_source("pipe_tone.mp4", 160, 90, 2.0, 30, audio=True)
+    silent = make_green_clip("pipe_silent.mp4", 160, 90, 3.0)
+    q = base_project(160, 90, 30.0)
+    add_video(q, add_asset(q, silent), 0.0, 3.0)
+    add_video(q, add_asset(q, tone), 3.0, 2.0)
+    aopts = R.options_from_settings(q)
+
+    def level(t):
+        argv = R.build_audio_pipe_command(q, aopts, start=t, duration=0.4)
+        raw = sh([ff.TOOLCHAIN.ffmpeg] + argv, binary=True).stdout
+        if len(raw) < 2048:
+            return None
+        total = count = 0
+        for i in range(0, len(raw) - 3, 4):
+            v = int.from_bytes(raw[i:i + 2], "little", signed=True)
+            total += v * v
+            count += 1
+        return (total / max(1, count)) ** 0.5
+
+    quiet, loud = level(0.5), level(3.5)
+    if not check(quiet is not None and loud is not None,
+                 "the preview audio pipe produced no samples"):
+        return
+    check(quiet < 200.0, "audio from 0.5s is not the silent part of the edit",
+          f"rms {quiet:.0f} of 32768")
+    check(loud > 1000.0, "audio from 3.5s does not follow the playhead",
+          f"rms {loud:.0f} of 32768")
+
+
 @test("audio follows the media, not the stored flag")
 def t_audio_flag():
     """A silent clip must still export with ``audio=True``.
