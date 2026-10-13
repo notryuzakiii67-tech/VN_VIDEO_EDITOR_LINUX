@@ -33,6 +33,7 @@ from ..core import audio as audio_mod
 from ..core import effects as fx_mod
 from ..core import ffmpeg as ff
 from ..core import probe as probe_mod
+from ..core import model
 from ..core import project as pio
 from ..core import render as render_mod
 from ..core import sfx as sfx_mod
@@ -45,18 +46,9 @@ from .widgets import (ChipGroup, ColorButton, IconButton, PresetStrip,
                       RowField, Section, SliderField, SwatchGrid, label,
                       hline)
 
-TEXT_PRESETS = [
-    ("POV: YOU ARE HIM", "Bebas Neue", "#ffffff", "#000000", "pop_in"),
-    ("INSANE CLUTCH", "Anton", "#ffe14d", "#000000", "zoom_in"),
-    ("GG EASY", "Archivo Black", "#39d98a", "#000000", "fade_in"),
-    ("SUBSCRIBE", "Bungee", "#ff2f6b", "#ffffff", "bounce_in"),
-    ("WAIT FOR IT…", "Teko", "#ffffff", "#000000", "slide_left"),
-    ("NO WAY", "Titan One", "#4cc9f0", "#0b1220", "pop_in"),
-    ("LET'S GO", "Poppins Bold", "#ffffff", "#ff2f6b", "slide_up"),
-    ("EPIC FAIL", "Alfa Slab One", "#ff8c42", "#000000", "shake"),
-    ("CLUTCH OR KICK", "Oswald", "#ffffff", "#000000", "rise"),
-    ("PRO TIP", "Montserrat", "#0b1220", "#e9edf5", "fade_in"),
-]
+#: The preset table lives in the core so the templates panel and the tools that
+#: verify the presets cannot drift apart.
+TEXT_PRESETS = list(model.TEXT_PRESETS)
 
 
 def dialog_frame_style() -> str:

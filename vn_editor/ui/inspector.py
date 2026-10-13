@@ -37,9 +37,9 @@ SPEED_PRESETS = [
 CURVE_PRESETS = list(core_speedcurve.CURVE_PRESETS)
 
 FIT_MODES = ["fit", "cover", "stretch"]
-BLEND_MODES = ["normal", "screen", "multiply", "overlay", "soft_light",
-               "hard_light", "add", "subtract", "difference", "lighten",
-               "darken", "colour_dodge", "colour_burn"]
+#: Blend modes for overlay layers; the table lives in the core so the renderer
+#: and this dropdown always agree.
+BLEND_MODES = list(render_mod.BLEND_MODES)
 
 
 class BasePage(QWidget):

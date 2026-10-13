@@ -510,6 +510,70 @@ def audit_lut_intensity(tmp: Path, src: str) -> None:
            f"Δ 0/0.5/1 = {diffs[0.0]:.2f}/{diffs[0.5]:.1f}/{diffs[1.0]:.1f}")
 
 
+def audit_blends(tmp: Path, src: str) -> None:
+    """Every blend mode offered for overlay layers has to change the mix."""
+    print(f"\noverlay blend modes ({len(render_mod.BLEND_MODES)})")
+    from vn_editor.core.model import Transform
+
+    def pip_project(mode: str) -> Project:
+        p = base_project(src)
+        ov = p.ensure_track_for("overlay")
+        clip = p.all_clips()[0]
+        overlay = clip.clone()
+        overlay.id = Clip().id
+        overlay.track_id = ov.id
+        overlay.blend = mode
+        overlay.transform = Transform(scale=0.45)
+        p.add_clip(overlay, ov)
+        return p
+
+    normal = tmp / "blend_normal.png"
+    ok, detail = render_ok(pip_project("normal"), tmp, "blend", at=0.6)
+    if not ok:
+        report("blend:normal", False, detail)
+        return
+    Path(str(normal)).write_bytes(Path(detail).read_bytes())
+    for mode in render_mod.BLEND_MODES:
+        if mode == "normal":
+            continue
+        ok, frame = render_ok(pip_project(mode), tmp, f"blend_{mode}", at=0.6)
+        if not ok:
+            report(f"blend:{mode}", False, frame)
+            continue
+        diff = mean_diff(str(normal), frame)
+        report(f"blend:{mode}", diff > 0.5, f"Δ vs normal = {diff:.1f}")
+
+
+def audit_text_presets(tmp: Path, src: str) -> None:
+    """The ready-made caption styles have to render with their own fonts."""
+    from vn_editor.core.model import TEXT_PRESETS
+    from vn_editor.core.ass import FONT_FILES
+    from vn_editor.core.model import TextProps
+    print(f"\ntext presets ({len(TEXT_PRESETS)})")
+    missing = sorted({font for _t, font, _c, _o, _a in TEXT_PRESETS
+                      if font not in FONT_FILES})
+    report("presets:fonts bundled", not missing,
+           "missing: " + ", ".join(missing) if missing else "all bundled")
+    for text, font, fill, outline, anim in TEXT_PRESETS:
+        p = base_project(src)
+        tt = p.ensure_track_for("text")
+        c = Clip(kind="text", track_id=tt.id, start=0.0, duration=1.5)
+        c.text = TextProps(text=text, font=font, size=64.0, color=fill,
+                           outline_width=3.0, outline_color=outline)
+        try:
+            apply_text_animation(c, anim, c.duration, 0.3)
+        except Exception as exc:                   # noqa: BLE001
+            report(f"preset:{text}", False, f"{type(exc).__name__}: {exc}")
+            continue
+        p.add_clip(c, tt)
+        ok, frame = render_ok(p, tmp, f"preset_{abs(hash(text)) % 9999}", at=0.55)
+        if not ok:
+            report(f"preset:{text}", False, frame)
+            continue
+        report(f"preset:{text}", changed(frame, f"preset:{text}") > 1.0,
+               f"Δ={changed(frame, f'preset:{text}'):.1f}")
+
+
 def audit_sfx(tmp: Path) -> None:
     from vn_editor.core import sfx as sfx_mod
     print(f"\nsound effects ({len(sfx_mod.CATALOG)})")
@@ -548,6 +612,14 @@ def main() -> int:
     if not ok:
         raise SystemExit(f"baseline render failed: {path}")
     BASELINE = path
+    spread = pixels(path)
+    channels = spread[2]
+    step = max(1, len(channels) // 3000)
+    sample = channels[0::step]
+    if len(set(sample)) < 8:
+        raise SystemExit(
+            "baseline frame is a flat colour — the clip is not reaching the "
+            "frame, so every measurement below would be meaningless")
     ok, exported = export_frame(base_project(src), tmp, "export_baseline")
     if ok:
         EXPORT_BASELINE = exported
@@ -565,6 +637,8 @@ def main() -> int:
     groups: List[Tuple[str, Callable]] = [
         ("effects", audit_effects),
         ("grades", audit_grades),
+        ("blends", audit_blends),
+        ("presets", audit_text_presets),
         ("stab", audit_stabilize),
         ("lut", audit_lut_intensity),
         ("text", audit_text_animations),

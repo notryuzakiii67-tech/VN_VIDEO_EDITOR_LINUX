@@ -318,6 +318,21 @@ TEXT_ANIMATIONS = [
     "rise", "drop", "pulse", "shake", "wave", "glitch", "float",
 ]
 
+#: Ready-made caption styles: (text, font, fill, outline, animation).  Shared by
+#: the templates panel and by the tools that check the presets still render.
+TEXT_PRESETS: List[Tuple[str, str, str, str, str]] = [
+    ("POV: YOU ARE HIM", "Bebas Neue", "#ffffff", "#000000", "pop_in"),
+    ("INSANE CLUTCH", "Anton", "#ffe14d", "#000000", "zoom_in"),
+    ("GG EASY", "Archivo Black", "#39d98a", "#000000", "fade_in"),
+    ("SUBSCRIBE", "Bungee", "#ff2f6b", "#ffffff", "bounce_in"),
+    ("WAIT FOR IT…", "Teko", "#ffffff", "#000000", "slide_left"),
+    ("NO WAY", "Titan One", "#4cc9f0", "#0b1220", "pop_in"),
+    ("LET'S GO", "Poppins Bold", "#ffffff", "#ff2f6b", "slide_up"),
+    ("EPIC FAIL", "Alfa Slab One", "#ff8c42", "#000000", "shake"),
+    ("CLUTCH OR KICK", "Oswald", "#ffffff", "#000000", "rise"),
+    ("PRO TIP", "Montserrat", "#0b1220", "#e9edf5", "fade_in"),
+]
+
 
 @dataclass
 class TextProps:

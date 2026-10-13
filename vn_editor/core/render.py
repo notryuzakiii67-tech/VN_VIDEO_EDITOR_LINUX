@@ -172,6 +172,21 @@ def write_png(path: str, pixels) -> bool:
         return False
 
 
+#: Blend modes offered for overlay layers, mapped to FFmpeg's ``blend`` filter.
+#: The renderer, the inspector and the project format all read this table.
+BLEND_MODES: List[str] = ["normal", "screen", "multiply", "overlay", "soft_light",
+                          "hard_light", "add", "subtract", "difference",
+                          "lighten", "darken", "colour_dodge", "colour_burn"]
+
+BLEND_FF: Dict[str, str] = {
+    "normal": "normal", "screen": "screen", "multiply": "multiply",
+    "overlay": "overlay", "soft_light": "softlight", "hard_light": "hardlight",
+    "add": "addition", "subtract": "subtract", "difference": "difference",
+    "lighten": "lighten", "darken": "darken", "colour_dodge": "dodge",
+    "colour_burn": "burn",
+}
+
+
 #: Mask shapes understood by :func:`mask_png`; "none" means no mask at all.
 MASK_SHAPES: List[str] = ["none", "rect", "ellipse", "radial", "linear", "heart",
                           "star", "split"]
@@ -572,6 +587,40 @@ class GraphBuilder:
         return out
 
     # -- one visual clip ---------------------------------------------------- #
+    def composite(self, acc: str, layer: str, blend: str = "normal",
+                  enable: str = "") -> str:
+        """Put *layer* (already placed on a canvas-sized RGBA image) over *acc*.
+
+        "normal" is a plain overlay.  Any other mode blends the two pictures
+        with FFmpeg's ``blend`` filter and then restores the background where
+        the layer is transparent, because ``blend`` itself ignores alpha:
+        ``maskedmerge`` needs its inputs in a non-alpha format, so the blend
+        stage runs in yuv420p and the result is composited back in rgba.
+        """
+        out = self.labels()
+        if not blend or blend == "normal" or blend not in BLEND_FF:
+            self.frag(f"[{acc}][{layer}]overlay=0:0:eof_action=pass:"
+                      f"format=auto{enable}[{out}]")
+            return out
+        acc_b, acc_f = self.labels(), self.labels()
+        layer_b, layer_m = self.labels(), self.labels()
+        mask, acc_y, layer_y = self.labels(), self.labels(), self.labels()
+        acc_y1, acc_y2, blended, merged, merged_rgba = (self.labels()
+                                                        for _ in range(5))
+        self.frag(f"[{acc}]format=rgba,split=2[{acc_b}][{acc_f}]")
+        self.frag(f"[{layer}]format=rgba,split=2[{layer_b}][{layer_m}]")
+        self.frag(f"[{layer_m}]format=rgba,alphaextract[{mask}]")
+        self.frag(f"[{acc_b}]format=yuv420p[{acc_y}]")
+        self.frag(f"[{layer_b}]format=yuv420p[{layer_y}]")
+        self.frag(f"[{acc_y}]split=2[{acc_y1}][{acc_y2}]")
+        self.frag(f"[{acc_y1}][{layer_y}]blend=all_mode={BLEND_FF[blend]}:"
+                  f"all_opacity=1[{blended}]")
+        self.frag(f"[{acc_y2}][{blended}][{mask}]maskedmerge[{merged}]")
+        self.frag(f"[{merged}]format=rgba[{merged_rgba}]")
+        self.frag(f"[{acc_f}][{merged_rgba}]overlay=0:0:eof_action=pass:"
+                  f"format=auto{enable}[{out}]")
+        return out
+
     def build_layer(self, clip: Clip, index: int, extend: float = 0.0) -> str:
         lab = self.labels()
         # Stabilisation runs on the raw (source-resolution) frames and before
@@ -982,12 +1031,9 @@ def _build_run(builder: GraphBuilder, project: Project, run: List[Clip],
     start = max(0.0, run[0].start)
     placed = builder.labels()
     builder.frag(f"[{cur}]setpts=PTS-STARTPTS+{_fmt(start)}/TB[{placed}]")
-    out = builder.labels()
-    builder.frag(
-        f"[{acc}][{placed}]overlay=0:0:eof_action=pass:format=auto:"
-        f"enable='between(t,{_fmt(start)},{_fmt(start + joined + 0.05)})'"
-        f"[{out}]")
-    return out
+    enable = (f":enable='between(t,{_fmt(start)},"
+              f"{_fmt(start + joined + 0.05)})'")
+    return builder.composite(acc, placed, run[0].blend, enable)
 
 
 # --------------------------------------------------------------------------- #
@@ -1142,12 +1188,11 @@ def render_frame(project: Project, t: float, width: int, height: int,
         layer = _frame_layer(
             builder, project, clip, idx, rel,
             head_frame=clip.kind == "video" and not stabilized,
-            stab_at=(src_t - read_from) if stabilized else None)
+            stab_at=(src_t - read_from) if stabilized else None,
+            at_time=t)
         if layer is None:
             continue
-        out = builder.labels()
-        builder.frag(f"[{acc}][{layer}]overlay=0:0:format=auto[{out}]")
-        acc = out
+        acc = builder.composite(acc, layer, clip.blend)
 
     stickers = [c for c in ass_mod.sticker_clips(project) if c.contains(t)]
     texts = [c for c in text_clips(project) if c.contains(t)]
@@ -1215,7 +1260,8 @@ def _frame_input_args(clip: Clip, src_t: float,
 
 def _frame_layer(builder: GraphBuilder, project: Project, clip: Clip,
                  idx: int, rel: float, head_frame: bool = False,
-                 stab_at: Optional[float] = None) -> Optional[str]:
+                 stab_at: Optional[float] = None,
+                 at_time: float = 0.0) -> Optional[str]:
     """One layer of a scrubbed frame.
 
     ``head_frame`` keeps only the first decoded frame: the caller has seeked
@@ -1223,6 +1269,11 @@ def _frame_layer(builder: GraphBuilder, project: Project, clip: Clip,
     would make ``overlay`` pick a much later frame.  ``stab_at`` does the same
     after stabilisation, which has to see every frame in order to consume its
     transform file — there the wanted frame is selected by timestamp.
+
+    The finished layer is stamped with the timeline time it belongs to
+    (``at_time``).  Without that stamp its single frame sits at PTS 0, i.e.
+    before the canvas, and ``overlay``'s ``eof_action=pass`` would drop the
+    whole layer and show the bare background.
     """
     t = clip.transform
 
@@ -1312,6 +1363,10 @@ def _frame_layer(builder: GraphBuilder, project: Project, clip: Clip,
     out = builder.labels()
     builder.frag(f"[{canvas}][{cur}]overlay=x='{_fmt(x * builder.ow)}-w/2':"
                  f"y='{_fmt(y * builder.oh)}-h/2':format=auto[{out}]")
+    if at_time > 0.002:
+        stamped = builder.labels()
+        builder.frag(f"[{out}]setpts=PTS+{_fmt(at_time)}/TB[{stamped}]")
+        return stamped
     return out
 
 

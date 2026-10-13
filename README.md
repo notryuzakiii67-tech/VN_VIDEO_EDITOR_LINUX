@@ -125,7 +125,10 @@ Everything below is implemented and exercised by the test suites in `tests/` and
   eight mask shapes with feathering, .cube LUTs with an intensity blend
 - Transitions: 65 entries (fades, wipes, slides, spins, circles, composites)
   with adjustable duration and audio crossfade
-- Blend PIP overlays on higher tracks with independent transforms
+- Blend PIP overlays on higher tracks with independent transforms and 13 blend
+  modes (screen, multiply, overlay, soft/hard light, add, subtract, difference,
+  lighten, darken, dodge, burn), alpha-correct so a small PIP never smears the
+  background
 
 **Motion & time**
 - Keyframes on x / y / scale / rotation / opacity with linear, ease and hold
@@ -227,9 +230,13 @@ what you get: the preview pipes raw frames from the same graph at a lower
 resolution, and the frame stills used while scrubbing come from the same code
 path. `tools/feature_audit.py` proves that shared code by rendering every
 catalogue entry — all 39 effects, 25 colour looks, 65 transitions, 24 text
-animations, 38 stickers, 8 mask shapes and 8 speed curves — and measuring that
-the picture actually changes, so a control that renders but does nothing cannot
-pass unnoticed. Filters, effects, masks and overlays are only listed in the UI
+animations, 10 caption presets, 13 overlay blend modes, 38 stickers, 8 mask
+shapes, 8 speed curves, 42 sound effects — and measuring that the picture
+actually changes, so a control that renders but does nothing cannot pass
+unnoticed.  The audit refuses to run if its baseline frame is a flat colour,
+i.e. if the test clip is not reaching the frame at all.  Tables the UI and the
+renderer share (blend modes, speed-curve presets, mask shapes, caption presets)
+live in the core so the two cannot drift apart. Filters, effects, masks and overlays are only listed in the UI
 when this build of FFmpeg actually provides them.
 
 ## Tests

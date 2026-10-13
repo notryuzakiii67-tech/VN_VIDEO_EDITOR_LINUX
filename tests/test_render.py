@@ -503,6 +503,16 @@ def t_scrub_time():
     res = R.render(p, str(TMP / "counter_export.mp4"), opts)
     check(res.ok, "counter export failed", res.error)
 
+    # A frame that is only the background would make the comparisons below
+    # meaningless (and used to happen when a layer's timestamp was dropped).
+    empty = base_project(320, 180, 30.0)
+    empty.settings.background = "#000000"
+    blank = scrub_png(empty, 0.5, "scrub_blank.png", 320, 180)
+    content = scrub_png(p, 0.5, "scrub_content.png", 320, 180)
+    check(frame_diff(blank, content) > 20.0,
+          "the scrub frame does not contain the clip at all",
+          f"difference {frame_diff(blank, content):.2f}")
+
     times = (0.5, 1.5, 2.5, 2.9)
     exports = {}
     for t in times:
