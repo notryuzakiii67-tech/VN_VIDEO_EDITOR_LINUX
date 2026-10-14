@@ -47,17 +47,24 @@ proxy generation from context menu, relink from context menu. Export
 dialog gains an "Add to queue" button alongside "Export now". See
 [PHASE3_REPORT.md](PHASE3_REPORT.md).
 
-## Phase 4 — Professional colour, audio, compositing, effects (next)
+## Phase 4 — Professional colour, audio, compositing, effects ✅ (v0.4.0)
 
-Colour: brightness/contrast/saturation/temperature, curves, wheels, LUT
-import, before/after, scopes. Audio: EQ, compression, limiting, noise
-reduction, automation, buses, metering/loudness. Compositing: alpha,
-blend modes, masks, chroma key (model fields already exist), effect
-stacking/reordering with enable toggles and presets. (The engine's
-effects library is large; Phase 4 exposes it carefully, with per-effect
-render verification.)
+Colour grading sliders (brightness, contrast, saturation, gamma,
+temperature) backed by the engine's effect system with per-parameter
+undo. Compositing: 13 blend modes (normal/screen/multiply/overlay/…),
+8 mask shapes (rect/ellipse/radial/linear/heart/star/split) with
+feather/size/invert, and chroma key (colour/similarity/blend). Effects
+panel: add/remove/enable/disable any of the engine's 38 effects across
+6 categories (Basic, Colour, Blur & Sharp, Light, Stylise, Repair)
+with live parameter sliders. Audio processing: 3-band EQ, bass/treble
+boost, compressor, denoise, echo, reverb, highpass/lowpass, normalize.
+All effects, compositing settings and audio processing survive
+save/reopen. Acceptance: colour-graded + masked + chroma-keyed +
+audio-processed project exported and verified (RMS difference between
+plain and graded exports proves effects are applied in the render).
+See [PHASE4_REPORT.md](PHASE4_REPORT.md).
 
-## Phase 5 — AI tools, extensibility, open-source maturity
+## Phase 5 — AI tools, extensibility, open-source maturity (next)
 
 Documented plugin architecture (effects, transitions, titles, importers/
 exporters, optional AI hooks), contributor docs, project interchange

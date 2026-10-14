@@ -4,6 +4,33 @@ All notable changes to OpenCut Studio. Format follows
 [Keep a Changelog](https://keepachangelog.com); versions follow
 [Semantic Versioning](https://semver.org).
 
+## [0.4.0] — 2026-10-14 — Phase 4: colour, compositing, effects, audio processing
+
+### Added
+- Colour grading sliders in the inspector: brightness, contrast,
+  saturation, gamma (backed by the engine's "basic" effect) and
+  temperature (separate effect). All parameters are undoable and
+  evaluated per-clip via the engine's filter system.
+- Compositing controls: blend mode selector (13 modes: normal, screen,
+  multiply, overlay, soft/hard light, add, subtract, difference,
+  lighten, darken, colour dodge/burn), mask shape picker (8 shapes:
+  rect, ellipse, radial, linear, heart, star, split) with feather,
+  width/height, and invert toggle; chroma key toggle with similarity
+  and blend sliders.
+- Effects panel: add/remove/enable/disable any of the engine's 38
+  effects (across 6 categories: Basic, Colour, Blur & Sharp, Light,
+  Stylise, Repair) with per-parameter live sliders. Effect catalogue
+  dialog with category and effect pickers.
+- Audio processing panel: 3-band EQ (low/mid/high), bass/treble boost,
+  compressor, denoise, echo, reverb, highpass/lowpass cutoff, normalize
+  toggle. All parameters undoable.
+- Engine facade: `effect_categories()`, `effect_params()`,
+  `effect_label()`, `effect_defaults()`, `BLEND_MODES`, `MASK_SHAPES`.
+- 6 acceptance tests (`tests/test_acceptance_phase4.py`) verifying
+  colour grading, masks, chroma key, audio processing, blend modes and
+  round-trip fidelity. 22 unit tests (`tests/test_phase4.py`).
+  146 OpenCut tests total.
+
 ## [0.3.0] — 2026-10-14 — Phase 3: performance & pro media workflows
 
 ### Added

@@ -13,7 +13,7 @@ OpenCut Studio takes inspiration from the *workflows* of editors like
 Premiere Pro, DaVinci Resolve, CapCut and VN — never their code, branding or
 assets. The interface is original, and so is every line of this project.
 
-## What works today (Phase 3, v0.3.0)
+## What works today (Phase 4, v0.4.0)
 
 - Native Ubuntu desktop app (Python + PySide6/Qt), dark, uncluttered UI:
   top bar, media library, preview, properties panel, multitrack timeline.
@@ -83,9 +83,26 @@ assets. The interface is original, and so is every line of this project.
 - **Media panel**: proxy (◈) and missing (⚠) indicators on asset labels.
 - 118 automated tests. See [docs/PHASE3_REPORT.md](docs/PHASE3_REPORT.md).
 
-The five-phase roadmap (colour/audio/compositing → AI & plugins) lives
-in [docs/ROADMAP.md](docs/ROADMAP.md). What is *not* implemented yet is
-listed there honestly rather than implied.
+### New in Phase 4
+
+- **Colour grading**: brightness, contrast, saturation, gamma and
+  temperature sliders in the inspector, backed by the engine's filter
+  system with per-parameter undo.
+- **Compositing**: 13 blend modes (normal, screen, multiply, overlay,
+  …), 8 mask shapes (rect, ellipse, radial, heart, star, …) with
+  feather/size/invert, and chroma key with similarity/blend sliders.
+- **Effects panel**: add any of 38 effects across 6 categories (Basic,
+  Colour, Blur & Sharp, Light, Stylise, Repair), per-parameter live
+  sliders, enable/disable, remove.
+- **Audio processing**: 3-band EQ, bass/treble boost, compressor,
+  denoise, echo, reverb, highpass/lowpass, normalize — all undoable.
+- 146 automated tests, including 6 acceptance tests that verify
+  colour grading produces a measurable difference from a plain export.
+  See [docs/PHASE4_REPORT.md](docs/PHASE4_REPORT.md).
+
+The five-phase roadmap lives in [docs/ROADMAP.md](docs/ROADMAP.md).
+What is *not* implemented yet is listed there honestly rather than
+implied.
 
 ## Install on Ubuntu
 
@@ -132,7 +149,7 @@ uses as a fallback.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest        # 118 tests, incl. acceptance + regression
+.venv/bin/python -m pytest        # 146 tests, incl. acceptance + regression
 .venv/bin/python main.py --self-test
 ```
 
@@ -150,5 +167,5 @@ recorded in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 ## Project documents
 
 - [Architecture](docs/ARCHITECTURE.md) · [Dependencies & licences](docs/DEPENDENCIES.md)
-- [Roadmap](docs/ROADMAP.md) · [Phase 1 report](docs/PHASE1_REPORT.md) · [Phase 2 report](docs/PHASE2_REPORT.md) · [Phase 3 report](docs/PHASE3_REPORT.md)
+- [Roadmap](docs/ROADMAP.md) · [Phase 1 report](docs/PHASE1_REPORT.md) · [Phase 2 report](docs/PHASE2_REPORT.md) · [Phase 3 report](docs/PHASE3_REPORT.md) · [Phase 4 report](docs/PHASE4_REPORT.md)
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)

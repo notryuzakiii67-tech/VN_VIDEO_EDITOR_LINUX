@@ -201,17 +201,22 @@ class Inspector(QWidget):
             self._build_transition_group(clip)
         elif clip.kind == "audio":
             self._build_audio_group(clip)
+            self._build_audio_processing_group(clip)
             self._build_keyframes_group(clip, include_volume=True,
                                         transform_props=False)
             self._build_transition_group(clip)
             self._build_speed_group(clip)
         else:
             self._build_transform_group(clip, text=False)
+            self._build_colour_group(clip)
+            self._build_compositing_group(clip)
+            self._build_effects_group(clip)
             self._build_keyframes_group(clip, include_volume=has_audio)
             self._build_transition_group(clip)
             self._build_speed_group(clip)
             if has_audio:
                 self._build_audio_group(clip)
+                self._build_audio_processing_group(clip)
 
     # ------------------------------------------------------------------ #
     #  Control builders
@@ -507,6 +512,433 @@ class Inspector(QWidget):
     #  Text
     # ------------------------------------------------------------------ #
     def _build_text_group(self, clip: Clip) -> None:
+        props = clip.text
+        assert props is not None
+        group = QGroupBox("Text")
+        form = QFormLayout(group)
+        edit = QPlainTextEdit(props.text)
+        edit.setFixedHeight(64)
+
+        def text_changed() -> None:
+            c = self._clip()
+            if c is not None and c.text is not None:
+                self._apply_live(
+                    lambda p, c=c: (setattr(c.text, "text", edit.toPlainText()),
+                                    setattr(c, "name",
+                                            edit.toPlainText().splitlines()[0][:24]
+                                            if edit.toPlainText() else "Text")))
+            self._text_timer.start()
+
+        edit.textChanged.connect(text_changed)
+        form.addRow("Wording", edit)
+
+        font = QComboBox()
+        font.addItems(FONTS)
+        if props.font in FONTS:
+            font.setCurrentText(props.font)
+        font.currentTextChanged.connect(
+            lambda v: self._apply(
+                "Change font",
+                lambda p, v=v: setattr(self._clip().text, "font", v)))  # type: ignore
+        form.addRow("Font", font)
+
+        size = QSpinBox()
+        size.setRange(8, 600)
+        size.setValue(int(round(props.size)))
+        size.setSuffix(" px")
+        size.valueChanged.connect(
+            lambda v: self._apply_live(
+                lambda p, v=v: setattr(self._clip().text, "size", float(v))))  # type: ignore
+        size.editingFinished.connect(lambda: self._commit("Change text size"))
+        form.addRow("Size", size)
+
+        self._color_row(form, "Colour", props.color,
+                        lambda c, v: setattr(c.text, "color", v),
+                        "Change text colour")
+        outline = QDoubleSpinBox()
+        outline.setRange(0.0, 40.0)
+        outline.setDecimals(1)
+        outline.setValue(float(props.outline_width))
+        outline.setSuffix(" px")
+        outline.valueChanged.connect(
+            lambda v: self._apply_live(
+                lambda p, v=v: setattr(self._clip().text, "outline_width", float(v))))  # type: ignore
+        outline.editingFinished.connect(lambda: self._commit("Change outline"))
+        form.addRow("Outline width", outline)
+        self._color_row(form, "Outline colour", props.outline_color,
+                        lambda c, v: setattr(c.text, "outline_color", v),
+                        "Change outline colour")
+        shadow = QDoubleSpinBox()
+        shadow.setRange(0.0, 40.0)
+        shadow.setDecimals(1)
+        shadow.setValue(float(props.shadow))
+        shadow.setSuffix(" px")
+        shadow.valueChanged.connect(
+            lambda v: self._apply_live(
+                lambda p, v=v: setattr(self._clip().text, "shadow", float(v))))  # type: ignore
+        shadow.editingFinished.connect(lambda: self._commit("Change shadow"))
+        form.addRow("Shadow", shadow)
+
+        align = QComboBox()
+        align.addItems(["left", "center", "right"])
+        align.setCurrentText(props.align)
+        align.currentTextChanged.connect(
+            lambda v: self._apply(
+                "Change alignment",
+                lambda p, v=v: setattr(self._clip().text, "align", v)))  # type: ignore
+        form.addRow("Align", align)
+
+        bold = QCheckBox("Bold")
+        bold.setChecked(props.bold)
+        bold.toggled.connect(
+            lambda v: self._apply(
+                "Toggle bold",
+                lambda p, v=v: setattr(self._clip().text, "bold", bool(v))))  # type: ignore
+        italic = QCheckBox("Italic")
+        italic.setChecked(props.italic)
+        italic.toggled.connect(
+            lambda v: self._apply(
+                "Toggle italic",
+                lambda p, v=v: setattr(self._clip().text, "italic", bool(v))))  # type: ignore
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(bold)
+        lay.addWidget(italic)
+        lay.addStretch(1)
+        form.addRow("Style", row)
+        self._add(group)
+
+    # ------------------------------------------------------------------ #
+    #  Phase 4: Effects, Colour grading, Compositing, Audio processing
+    # ------------------------------------------------------------------ #
+    def _build_colour_group(self, clip: Clip) -> None:
+        """Quick colour grading sliders: brightness, contrast, saturation, temperature."""
+        group = QGroupBox("Colour")
+        form = QFormLayout(group)
+        # Find or create a basic effect on this clip
+        basic = self._find_or_add_effect(clip, "basic")
+        defaults = engine.effect_defaults("basic")
+        for key, label, lo, hi in [
+            ("brightness", "Brightness", -1.0, 1.0),
+            ("contrast", "Contrast", 0.0, 3.0),
+            ("saturation", "Saturation", 0.0, 3.0),
+            ("gamma", "Gamma", 0.1, 3.0),
+        ]:
+            defval = defaults.get(key, 0.0 if key == "brightness" else 1.0)
+            self._slider_row(
+                form, label,
+                basic.params.get(key, defval),
+                lo, hi, 100,
+                lambda c, k=key, d=defval: self._get_fx_param(c, "basic", k, d),
+                lambda c, v, k=key: self._set_effect_param(c, "basic", k, v),
+                f"Change {label.lower()}")
+        # Temperature (separate effect)
+        temp = self._find_or_add_effect(clip, "temperature")
+        temp_val = temp.params.get("temperature", 0.0) if temp else 0.0
+        self._slider_row(
+            form, "Temperature", temp_val, -1.0, 1.0, 100,
+            lambda c: self._get_fx_param(c, "temperature", "temperature", 0.0),
+            lambda c, v: self._set_effect_param(c, "temperature", "temperature", v),
+            "Change temperature")
+        self._add(group)
+
+    def _build_compositing_group(self, clip: Clip) -> None:
+        """Blend mode, mask, and chroma key controls."""
+        group = QGroupBox("Compositing")
+        form = QFormLayout(group)
+        # Blend mode
+        blend = QComboBox()
+        for mode in engine.BLEND_MODES:
+            blend.addItem(mode.replace("_", " ").title(), mode)
+        idx = blend.findData(clip.blend)
+        blend.setCurrentIndex(max(0, idx))
+        blend.currentIndexChanged.connect(
+            lambda _i: self._apply(
+                "Change blend mode",
+                lambda p: setattr(self._clip(), "blend", blend.currentData())))
+        form.addRow("Blend mode", blend)
+        # Mask shape
+        mask_shape = QComboBox()
+        for shape in engine.MASK_SHAPES:
+            mask_shape.addItem(shape.title() if shape != "none" else "None", shape)
+        idx = mask_shape.findData(clip.mask.shape)
+        mask_shape.setCurrentIndex(max(0, idx))
+        mask_shape.currentIndexChanged.connect(
+            lambda _i: self._apply(
+                "Change mask",
+                lambda p: setattr(self._clip().mask, "shape", mask_shape.currentData())))
+        form.addRow("Mask", mask_shape)
+        # Mask feather
+        self._slider_row(
+            form, "Mask feather", clip.mask.feather * 100, 0, 100, 1,
+            lambda c: c.mask.feather,
+            lambda c, v: setattr(c.mask, "feather", v / 100.0),
+            "Change mask feather", "%")
+        # Mask size
+        self._slider_row(
+            form, "Mask width", clip.mask.width * 100, 0, 100, 1,
+            lambda c: c.mask.width * 100,
+            lambda c, v: setattr(c.mask, "width", v / 100.0),
+            "Change mask width", "%")
+        self._slider_row(
+            form, "Mask height", clip.mask.height * 100, 0, 100, 1,
+            lambda c: c.mask.height * 100,
+            lambda c, v: setattr(c.mask, "height", v / 100.0),
+            "Change mask height", "%")
+        mask_invert = QCheckBox("Invert mask")
+        mask_invert.setChecked(clip.mask.invert)
+        mask_invert.toggled.connect(
+            lambda v: self._apply(
+                "Invert mask",
+                lambda p, v=v: setattr(self._clip().mask, "invert", bool(v))))
+        form.addRow(mask_invert)
+        # Chroma key
+        chroma_enabled = QCheckBox("Chroma key (green/blue screen)")
+        chroma_enabled.setChecked(clip.chroma.enabled)
+        chroma_enabled.toggled.connect(
+            lambda v: self._apply(
+                "Toggle chroma key",
+                lambda p, v=v: setattr(self._clip().chroma, "enabled", bool(v))))
+        form.addRow(chroma_enabled)
+        self._slider_row(
+            form, "Key similarity", clip.chroma.similarity * 100, 0, 100, 1,
+            lambda c: c.chroma.similarity,
+            lambda c, v: setattr(c.chroma, "similarity", v / 100.0),
+            "Change chroma similarity", "%")
+        self._slider_row(
+            form, "Key blend", clip.chroma.blend * 100, 0, 100, 1,
+            lambda c: c.chroma.blend,
+            lambda c, v: setattr(c.chroma, "blend", v / 100.0),
+            "Change chroma blend", "%")
+        self._add(group)
+
+    def _build_effects_group(self, clip: Clip) -> None:
+        """Effect stack: add, remove, enable/disable, reorder effects."""
+        group = QGroupBox("Effects")
+        lay = QVBoxLayout(group)
+        # Current effects list
+        if clip.filters:
+            for fx in clip.filters:
+                row = QHBoxLayout()
+                lbl = QLabel(engine.effect_label(fx.kind))
+                lbl.setStyleSheet("font-weight:600;")
+                row.addWidget(lbl)
+                # Enable/disable toggle
+                en = QCheckBox()
+                en.setChecked(fx.enabled)
+                en.setToolTip("Enable/disable this effect")
+                en.toggled.connect(
+                    lambda v, fx_id=fx.id: self._toggle_effect(fx_id, v))
+                row.addWidget(en)
+                # Remove button
+                rm = QPushButton("✕")
+                rm.setFixedWidth(24)
+                rm.setToolTip("Remove this effect")
+                rm.clicked.connect(
+                    lambda _, fx_id=fx.id: self._remove_effect(fx_id))
+                row.addWidget(rm)
+                lay.addLayout(row)
+                # Parameters
+                params = engine.effect_params(fx.kind)
+                for p in params:
+                    if p.kind == "float":
+                        val = fx.params.get(p.key, p.default)
+                        self._slider_row_inline(
+                            lay, p.label, val, p.lo, p.hi,
+                            max(1, int(1.0 / p.step)) if p.step else 100,
+                            fx.id, p.key, p.default)
+        # Add effect button
+        add_btn = QPushButton("+ Add effect")
+        add_btn.setToolTip("Add a video effect to this clip")
+        add_btn.clicked.connect(lambda: self._add_effect_dialog(clip))
+        lay.addWidget(add_btn)
+        self._add(group)
+
+    def _build_audio_processing_group(self, clip: Clip) -> None:
+        """Audio processing: EQ, compressor, denoise, echo, reverb."""
+        group = QGroupBox("Audio processing")
+        form = QFormLayout(group)
+        a = clip.audio
+        # EQ
+        for label, attr in [("EQ Low", "eq_low"), ("EQ Mid", "eq_mid"),
+                            ("EQ High", "eq_high")]:
+            self._slider_row(
+                form, label, getattr(a, attr), -12, 12, 1,
+                lambda c, at=attr: getattr(c.audio, at),
+                lambda c, v, at=attr: setattr(c.audio, at, v),
+                f"Change {label.lower()}", " dB")
+        # Bass/Treble boost
+        for label, attr in [("Bass boost", "bass_boost"),
+                            ("Treble boost", "treble_boost")]:
+            self._slider_row(
+                form, label, getattr(a, attr) * 100, 0, 100, 1,
+                lambda c, at=attr: getattr(c.audio, at) * 100,
+                lambda c, v, at=attr: setattr(c.audio, at, v / 100.0),
+                f"Change {label.lower()}", "%")
+        # Compressor
+        self._slider_row(
+            form, "Compressor", a.compressor * 100, 0, 100, 1,
+            lambda c: c.audio.compressor * 100,
+            lambda c, v: setattr(c.audio, "compressor", v / 100.0),
+            "Change compressor", "%")
+        # Denoise
+        self._slider_row(
+            form, "Denoise", a.denoise * 100, 0, 100, 1,
+            lambda c: c.audio.denoise * 100,
+            lambda c, v: setattr(c.audio, "denoise", v / 100.0),
+            "Change denoise", "%")
+        # Echo
+        self._slider_row(
+            form, "Echo", a.echo * 100, 0, 100, 1,
+            lambda c: c.audio.echo * 100,
+            lambda c, v: setattr(c.audio, "echo", v / 100.0),
+            "Change echo", "%")
+        # Reverb
+        self._slider_row(
+            form, "Reverb", a.reverb * 100, 0, 100, 1,
+            lambda c: c.audio.reverb * 100,
+            lambda c, v: setattr(c.audio, "reverb", v / 100.0),
+            "Change reverb", "%")
+        # Highpass/Lowpass
+        for label, attr in [("Highpass", "highpass"), ("Lowpass", "lowpass")]:
+            self._slider_row(
+                form, label, getattr(a, attr), 0, 20000, 1,
+                lambda c, at=attr: getattr(c.audio, at),
+                lambda c, v, at=attr: setattr(c.audio, at, v),
+                f"Change {label.lower()}", " Hz")
+        # Normalize
+        norm = QCheckBox("Normalize audio")
+        norm.setChecked(a.normalize)
+        norm.toggled.connect(
+            lambda v: self._apply(
+                "Toggle normalize",
+                lambda p, v=v: setattr(self._clip().audio, "normalize", bool(v))))
+        form.addRow(norm)
+        self._add(group)
+
+    # -- Phase 4 helpers -- #
+    def _get_fx_param(self, clip: Clip, kind: str, key: str, default: float) -> float:
+        for f in clip.filters:
+            if f.kind == kind:
+                return f.params.get(key, default)
+        return default
+
+    def _find_or_add_effect(self, clip: Clip, kind: str):
+        """Find an existing effect of this kind, or create one."""
+        for fx in clip.filters:
+            if fx.kind == kind and fx.enabled:
+                return fx
+        # Create with defaults
+        from vn_editor.core.model import FilterInstance
+        defaults = engine.effect_defaults(kind)
+        fx = FilterInstance(kind=kind, params=dict(defaults))
+        clip.filters.append(fx)
+        return fx
+
+    def _set_effect_param(self, clip: Clip, kind: str, key: str, value: float) -> None:
+        """Set a parameter on an effect of the given kind."""
+        fx = None
+        for f in clip.filters:
+            if f.kind == kind:
+                fx = f
+                break
+        if fx is None:
+            return
+        fx.params[key] = value
+
+    def _toggle_effect(self, fx_id: str, enabled: bool) -> None:
+        def _do(p):
+            c = self._clip()
+            if c:
+                for f in c.filters:
+                    if f.id == fx_id:
+                        f.enabled = enabled
+        self._apply("Toggle effect" if not enabled else "Enable effect", _do)
+
+    def _enable_filter(self, fx_id: str) -> None:
+        c = self._clip()
+        if c:
+            for f in c.filters:
+                if f.id == fx_id:
+                    f.enabled = True
+
+    def _remove_effect(self, fx_id: str) -> None:
+        self._apply(
+            "Remove effect",
+            lambda p: self._clip().remove_filter(fx_id))
+
+    def _add_effect_dialog(self, clip: Clip) -> None:
+        """Show a dialog to add an effect from the catalogue."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add effect")
+        dlg.setMinimumWidth(300)
+        lay = QVBoxLayout(dlg)
+        cat_combo = QComboBox()
+        cats = engine.effect_categories()
+        for cat in cats:
+            cat_combo.addItem(cat, cat)
+        lay.addWidget(cat_combo)
+        fx_combo = QComboBox()
+        lay.addWidget(fx_combo)
+        def update_effects(idx):
+            fx_combo.clear()
+            cat = cat_combo.currentData()
+            for kind in cats.get(cat, []):
+                fx_combo.addItem(engine.effect_label(kind), kind)
+        cat_combo.currentIndexChanged.connect(update_effects)
+        update_effects(0)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if dlg.exec() == QDialog.Accepted and fx_combo.currentData():
+            kind = fx_combo.currentData()
+            from vn_editor.core.model import FilterInstance
+            defaults = engine.effect_defaults(kind)
+            fx = FilterInstance(kind=kind, params=dict(defaults))
+            self._apply(
+                f"Add {engine.effect_label(kind)}",
+                lambda p: self._clip().filters.append(fx))
+            self._rebuild()
+
+    def _slider_row_inline(self, layout, label, value, lo, hi, scale,
+                           fx_id, param_key, default):
+        """Inline slider for effect parameters (not QFormLayout-based)."""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(label)
+        lbl.setFixedWidth(80)
+        h.addWidget(lbl)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(int(lo * scale), int(hi * scale))
+        slider.setValue(int(round(value * scale)))
+        h.addWidget(slider, 1)
+        spin = QDoubleSpinBox()
+        spin.setRange(lo, hi)
+        spin.setDecimals(2)
+        spin.setValue(value)
+        spin.setFixedWidth(70)
+        h.addWidget(spin)
+        slider.valueChanged.connect(lambda v: (spin.blockSignals(True),
+            spin.setValue(v / scale), spin.blockSignals(False),
+            self._set_effect_param_live(fx_id, param_key, v / scale)))
+        spin.valueChanged.connect(lambda v: (slider.blockSignals(True),
+            slider.setValue(int(v * scale)), slider.blockSignals(False),
+            self._set_effect_param_live(fx_id, param_key, v)))
+        spin.editingFinished.connect(lambda: self._commit(f"Change {label.lower()}"))
+        layout.addWidget(row)
+
+    def _set_effect_param_live(self, fx_id, key, value):
+        c = self._clip()
+        if c:
+            for f in c.filters:
+                if f.id == fx_id:
+                    self._begin()
+                    f.params[key] = value
+                    return
         props = clip.text
         assert props is not None
         group = QGroupBox("Text")

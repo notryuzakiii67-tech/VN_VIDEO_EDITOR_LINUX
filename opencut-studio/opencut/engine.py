@@ -47,6 +47,7 @@ from vn_editor.core import ffmpeg as _ffmpeg          # noqa: E402
 from vn_editor.core import probe as _probe            # noqa: E402
 from vn_editor.core import project as _engine_files   # noqa: E402
 from vn_editor.core import render as _render          # noqa: E402
+from vn_editor.core import effects as _fx_mod         # noqa: E402
 from vn_editor.core import undo as _undo              # noqa: E402
 from vn_editor.core import ass as _ass                  # noqa: E402
 from vn_editor.core import audio as _audio              # noqa: E402
@@ -84,6 +85,9 @@ __all__ = [
     "autosave", "recovery_entries", "clear_recovery", "thumb_dir",
     "recovery_dir", "generate_proxy", "detect_vfr",
     "generate_thumbnail_cached",
+    # Phase 4:
+    "effect_categories", "effect_params", "effect_label", "effect_defaults",
+    "BLEND_MODES", "MASK_SHAPES",
 ]
 
 History = _undo.History
@@ -281,3 +285,33 @@ def generate_thumbnail_cached(source_path: str, asset_id: str,
     if make_thumbnail(source_path, out_path, at=seek_at, width=width):
         return out_path
     return ""
+
+
+# --------------------------------------------------------------------------- #
+#  Phase 4: effects, colour grading, compositing, audio processing
+# --------------------------------------------------------------------------- #
+
+def effect_categories() -> dict:
+    """Effect categories and their effect kinds.
+
+    Returns ``{category: [kind, ...], ...}``.
+    """
+    return _fx_mod.categories()
+
+def effect_params(kind: str) -> list:
+    """Parameter specs for an effect kind.
+
+    Returns a list of ``Param`` objects (key, label, lo, hi, step, default).
+    """
+    return _fx_mod.effect_params(kind)
+
+def effect_label(kind: str) -> str:
+    """Human-readable label for an effect kind."""
+    return _fx_mod.effect_label(kind)
+
+def effect_defaults(kind: str) -> dict:
+    """Default parameter values for an effect kind."""
+    return _fx_mod.default_params(kind)
+
+BLEND_MODES: list = _render.BLEND_MODES
+MASK_SHAPES: list = _render.MASK_SHAPES
