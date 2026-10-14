@@ -1,0 +1,11 @@
+# VN Studio — runtime dependencies
+#
+# FFmpeg is not a Python package: install the system build with
+#     sudo apt install ffmpeg
+# (see install.sh).  As a fallback the editor will use the static binary that
+# ships with imageio-ffmpeg, which is why it is listed here.
+
+PySide6-Essentials>=6.6,<6.10
+PySide6-Addons>=6.6,<6.10
+numpy>=1.24
+imageio-ffmpeg>=0.4.9

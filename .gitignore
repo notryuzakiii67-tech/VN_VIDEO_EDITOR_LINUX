@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# App runtime
+*.vnp.bak
+vn-editor-cache/
+vendor/ffmpeg/ffmpeg
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

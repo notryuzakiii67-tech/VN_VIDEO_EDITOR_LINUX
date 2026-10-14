@@ -1,0 +1,13 @@
+# OpenCut Studio — runtime dependencies.
+#
+# FFmpeg is a system tool, not a Python package:
+#     sudo apt install ffmpeg
+# `imageio-ffmpeg` below is the supported fallback: it ships a static
+# FFmpeg binary (with libx264) that the engine uses automatically when no
+# system FFmpeg is present.  See docs/DEPENDENCIES.md for the licence
+# record of every entry here.
+
+PySide6-Essentials>=6.6,<6.10
+PySide6-Addons>=6.6,<6.10
+numpy>=1.24
+imageio-ffmpeg>=0.4.9
