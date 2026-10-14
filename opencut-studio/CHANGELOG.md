@@ -4,6 +4,31 @@ All notable changes to OpenCut Studio. Format follows
 [Keep a Changelog](https://keepachangelog.com); versions follow
 [Semantic Versioning](https://semver.org).
 
+## [0.3.0] — 2026-10-14 — Phase 3: performance & pro media workflows
+
+### Added
+- Background worker pool (`opencut/background.py`) for media analysis,
+  thumbnail generation, waveform decoding, proxy transcoding, and
+  background exports — all on `QThreadPool` so the UI never blocks.
+- Proxy media: FFmpeg transcodes large videos to half-height H.264,
+  cached in the project cache directory; skipped for small or audio-only
+  assets. Context menu and File → Generate proxies.
+- Preview quality selector (Draft/Low/Half/Full) in the preview transport
+  bar, scaling scrub stills for faster iteration on large timelines.
+- Autosave: a 20-second timer writes recovery snapshots when the project
+  is dirty; startup recovery dialog offers to restore the latest snapshot.
+- Media relinking: context menu on missing assets and File → Relink
+  missing media, using the engine's tested `relink()` function.
+- Render queue (`RenderQueue`): sequential background exports with
+  progress reporting, cancellation, and an "Add to queue" button in the
+  export dialog.
+- VFR detection on import: non-standard fps and frame-count mismatches
+  are flagged, with a user-visible warning suggesting re-encoding.
+- Media panel enhancements: proxy indicator (◈) and missing indicator
+  (⚠) on asset labels, proxy generation from context menu.
+- 38 new automated tests (`tests/test_phase3.py`); 118 OpenCut tests
+  total.
+
 ## [0.2.0] — 2026-10-14 — Phase 2: advanced editing & motion graphics
 
 ### Added

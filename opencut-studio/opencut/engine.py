@@ -80,6 +80,10 @@ __all__ = [
     "ffmpeg_available", "ffmpeg_description", "make_thumbnail",
     "new_project", "options_from_settings", "popen_ffmpeg", "probe_media",
     "render_frame", "render_project", "terminate_process", "waveform_peaks",
+    # Phase 3:
+    "autosave", "recovery_entries", "clear_recovery", "thumb_dir",
+    "recovery_dir", "generate_proxy", "detect_vfr",
+    "generate_thumbnail_cached",
 ]
 
 History = _undo.History
@@ -187,3 +191,93 @@ def speed_curve_points(label: str) -> list:
     """Normalised (progress, speed) points for a curve preset label."""
     return [(float(a), float(b))
             for a, b in _speedcurve.curve_preset_points(label)]
+
+
+# --------------------------------------------------------------------------- #
+#  Phase 3: autosave, recovery, relink, proxy, VFR detection
+# --------------------------------------------------------------------------- #
+import os as _os
+from pathlib import Path as _Path
+
+def autosave(project: Project, path: str = None) -> Optional[_Path]:
+    """Write a recovery snapshot.  Returns the slot path, or None on failure."""
+    return _engine_files.autosave(project, path)
+
+def recovery_entries() -> list:
+    """Return metadata for available recovery snapshots."""
+    return _engine_files.recovery_entries()
+
+def clear_recovery(slot_path: str) -> None:
+    """Dismiss a recovery entry (after the user has dealt with it)."""
+    _engine_files.clear_recovery(slot_path)
+
+def thumb_dir() -> _Path:
+    """Directory for cached media thumbnails."""
+    return _engine_files.thumb_dir()
+
+def recovery_dir() -> _Path:
+    """Directory for recovery snapshots."""
+    return _engine_files.recovery_dir()
+
+def generate_proxy(source_path: str, out_path: str,
+                   proxy_height: int = 540) -> bool:
+    """Generate a low-res proxy for a video file.
+
+    Returns True on success.  Audio-only and image files are skipped.
+    """
+    info = probe_media(source_path)
+    if info.kind != "video" or info.height <= 0:
+        return False
+    target_h = min(proxy_height, info.height)
+    if target_h >= info.height:
+        return False                     # already small enough
+    target_h = max(16, target_h // 2 * 2)
+    scale = target_h / float(info.height)
+    target_w = max(16, int(info.width * scale) // 2 * 2)
+    args = ["-y", "-v", "error",
+            "-i", source_path,
+            "-vf", f"scale={target_w}:{target_h}:flags=bilinear",
+            "-c:v", "libx264", "-crf", "28", "-preset", "ultrafast",
+            "-an", "-pix_fmt", "yuv420p", out_path]
+    r = _ffmpeg.ffmpeg(*args, timeout=120)
+    return r.ok and _os.path.exists(out_path) and _os.path.getsize(out_path) > 100
+
+def detect_vfr(source_path: str) -> dict:
+    """Probe a media file and detect variable frame rate.
+
+    Returns ``{"vfr": bool, "fps": float, "issues": [str, ...]}``.
+    """
+    info = probe_media(source_path)
+    result = {"vfr": False, "fps": info.fps, "issues": []}
+    if info.fps and info.fps > 0:
+        standard = {23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0, 59.94, 60.0}
+        if not any(abs(info.fps - s) < 0.05 for s in standard):
+            result["vfr"] = True
+            result["issues"].append(
+                f"Non-standard frame rate: {info.fps:.3f} fps")
+    if (info.kind == "video" and info.frame_count > 0
+            and info.fps > 0 and info.duration > 0):
+        expected = info.duration * info.fps
+        if abs(info.frame_count - expected) > expected * 0.05:
+            result["vfr"] = True
+            result["issues"].append(
+                f"Frame count mismatch: {info.frame_count} actual "
+                f"vs ~{int(expected)} expected")
+    return result
+
+def generate_thumbnail_cached(source_path: str, asset_id: str,
+                              width: int = 192, at: float = 1.0) -> str:
+    """Generate (or return cached) thumbnail for a media asset.
+
+    Returns the thumbnail path, or '' on failure.
+    """
+    out_dir = str(thumb_dir() / "opencut-thumbs")
+    _os.makedirs(out_dir, exist_ok=True)
+    out_path = _os.path.join(out_dir, f"{asset_id}.png")
+    if _os.path.exists(out_path):
+        return out_path
+    info = probe_media(source_path)
+    seek_at = min(at, max(0.0, info.duration * 0.25)) if info.duration > 0 else 1.0
+    if make_thumbnail(source_path, out_path, at=seek_at, width=width):
+        return out_path
+    return ""

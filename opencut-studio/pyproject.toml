@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencut-studio"
-version = "0.2.0"
+version = "0.3.0"
 description = "OpenCut Studio — a simple, professional open-source desktop video editor for Ubuntu Linux"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }

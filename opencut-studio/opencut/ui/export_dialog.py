@@ -85,9 +85,14 @@ class ExportDialog(QDialog):
         buttons.addStretch(1)
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.clicked.connect(self._cancel)
-        self._export_btn = QPushButton("Export")
+        self._queue_btn = QPushButton("Add to queue")
+        self._queue_btn.setToolTip(
+            "Queue this export (runs in the background)")
+        self._queue_btn.clicked.connect(self._enqueue)
+        self._export_btn = QPushButton("Export now")
         self._export_btn.setObjectName("accent")
         self._export_btn.clicked.connect(self._start)
+        buttons.addWidget(self._queue_btn)
         buttons.addWidget(self._cancel_btn)
         buttons.addWidget(self._export_btn)
         layout.addLayout(buttons)
@@ -106,6 +111,27 @@ class ExportDialog(QDialog):
             if not path.lower().endswith(".mp4"):
                 path += ".mp4"
             self._path.setText(path)
+
+    def _enqueue(self) -> None:
+        """Add this export to the background render queue and close."""
+        output = self._path.text().strip()
+        if not output:
+            QMessageBox.warning(self, "Export", "Choose an output file first.")
+            return
+        preset_key = self._preset.currentData()
+        # Access the parent window's render queue
+        from .main_window import MainWindow
+        parent_win = self.parent()
+        while parent_win is not None and not isinstance(parent_win, MainWindow):
+            parent_win = parent_win.parent()
+        if parent_win is not None and hasattr(parent_win, 'render_queue'):
+            parent_win.render_queue.enqueue(
+                self.project.to_dict(), output, preset_key)
+            self.accept()
+        else:
+            QMessageBox.information(
+                self, "Queue unavailable",
+                "Could not reach the render queue. Use Export now instead.")
 
     # ------------------------------------------------------------------ #
     def _start(self) -> None:

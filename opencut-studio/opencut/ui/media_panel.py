@@ -12,9 +12,9 @@ from typing import Dict, Optional
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMenu, QPushButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMenu,
+                               QPushButton, QVBoxLayout, QWidget)
 
 from .. import engine
 from ..engine import MediaAsset
@@ -79,6 +79,7 @@ class MediaPanel(QWidget):
         self._assets: Dict[str, MediaAsset] = {}
         self._items: Dict[str, QListWidgetItem] = {}
         self._pool = QThreadPool.globalInstance()
+        self._project_ref = None     # set by main_window for relink
         self._signals = _ThumbSignals(self)
         self._signals.done.connect(self._thumb_done)
 
@@ -141,7 +142,12 @@ class MediaPanel(QWidget):
             detail = f"{asset.duration:.1f}s"
             if asset.width:
                 detail += f" · {asset.width}×{asset.height}"
-        return f"{asset.name}\n{detail}"
+        prefix = ""
+        if asset.missing or not os.path.exists(asset.path):
+            prefix = "⚠ MISSING · "
+        elif asset.proxy_path:
+            prefix = "◈ "
+        return f"{prefix}{asset.name}\n{detail}"
 
     def _request_thumbnail(self, asset: MediaAsset) -> None:
         out_dir = os.path.join(str(engine.cache_dir()), "opencut-thumbs")
@@ -175,12 +181,63 @@ class MediaPanel(QWidget):
         if item is None:
             return
         asset_id = item.data(Qt.UserRole)
+        asset = self._assets.get(asset_id)
         menu = QMenu(self)
         add = menu.addAction("Add to timeline")
         add.triggered.connect(lambda: self.add_requested.emit(asset_id))
+        if asset and (asset.missing or not os.path.exists(asset.path)):
+            relink = menu.addAction("Relink file…")
+            relink.triggered.connect(
+                lambda: self._relink_asset(asset_id))
+        if asset and asset.kind == "video" and asset.height > 540 \
+                and not asset.proxy_path:
+            gen_proxy = menu.addAction("Generate proxy")
+            gen_proxy.triggered.connect(
+                lambda: self._generate_proxy(asset_id))
+        menu.addSeparator()
         remove = menu.addAction("Remove from library")
         remove.triggered.connect(lambda: self.remove_requested.emit(asset_id))
         menu.exec(self._list.mapToGlobal(pos))
+
+    def _relink_asset(self, asset_id: str) -> None:
+        """Open a file dialog to relink a missing asset."""
+        asset = self._assets.get(asset_id)
+        if asset is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Locate {asset.name}", "",
+            "Media files (*.*);;All files (*)")
+        if path:
+            from .. import engine
+            engine.relink_media(self._project_ref, asset.id, path)
+            self._refresh_asset(asset)
+
+    def _generate_proxy(self, asset_id: str) -> None:
+        """Generate a proxy for a video asset in the background."""
+        asset = self._assets.get(asset_id)
+        if asset is None:
+            return
+        from ..background import ProxyWorker
+        import os as _os
+        proxy_dir = _os.path.join(str(engine.cache_dir()), "opencut-proxies")
+        _os.makedirs(proxy_dir, exist_ok=True)
+        out = _os.path.join(proxy_dir, f"{asset.id}.mp4")
+        worker = ProxyWorker(asset.id, asset.path, out)
+        worker.signals.done.connect(self._proxy_done)
+        self._pool.start(worker)
+
+    def _proxy_done(self, asset_id: str, proxy_path: str, ok: bool) -> None:
+        if ok and proxy_path:
+            asset = self._assets.get(asset_id)
+            if asset:
+                asset.proxy_path = proxy_path
+                self._refresh_asset(asset)
+
+    def _refresh_asset(self, asset: MediaAsset) -> None:
+        """Update the list item label/icon for an asset."""
+        item = self._items.get(asset.id)
+        if item:
+            item.setText(self._asset_label(asset))
 
     def selected_asset_id(self) -> Optional[str]:
         item = self._list.currentItem()

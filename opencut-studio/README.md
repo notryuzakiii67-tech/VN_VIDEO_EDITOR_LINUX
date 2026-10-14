@@ -13,7 +13,7 @@ OpenCut Studio takes inspiration from the *workflows* of editors like
 Premiere Pro, DaVinci Resolve, CapCut and VN — never their code, branding or
 assets. The interface is original, and so is every line of this project.
 
-## What works today (Phase 1)
+## What works today (Phase 3, v0.3.0)
 
 - Native Ubuntu desktop app (Python + PySide6/Qt), dark, uncluttered UI:
   top bar, media library, preview, properties panel, multitrack timeline.
@@ -62,15 +62,37 @@ assets. The interface is original, and so is every line of this project.
   tests for four engine bugs that test found. See
   [docs/PHASE2_REPORT.md](docs/PHASE2_REPORT.md).
 
-The five-phase roadmap (performance & proxies → colour/audio/compositing
-→ AI & plugins) lives in [docs/ROADMAP.md](docs/ROADMAP.md). What is
-*not* implemented yet is listed there honestly rather than implied.
+### New in Phase 3
+
+- **Background workers**: thumbnails, waveforms, proxy generation, media
+  analysis and exports all run on a QThreadPool — the UI never blocks.
+- **Proxy media**: large video files are transcoded to lightweight
+  half-height H.264 proxies for faster preview; generated per-asset
+  (context menu) or for all assets (File → Generate proxies).
+- **Preview quality selector** (Draft / Low / Half / Full): lower the
+  preview resolution for faster iteration on 4K or long timelines.
+- **Autosave + crash recovery**: 20-second autosave timer writes
+  recovery snapshots; a startup dialog offers to restore the latest one.
+- **Media relinking**: right-click a missing asset → Relink, or use
+  File → Relink missing media to locate moved files.
+- **Render queue**: queue multiple exports in the background, with
+  progress and cancellation. The export dialog has "Add to queue" and
+  "Export now" buttons.
+- **VFR detection**: imported files are checked for variable frame rate;
+  a warning suggests re-encoding if detected.
+- **Media panel**: proxy (◈) and missing (⚠) indicators on asset labels.
+- 118 automated tests. See [docs/PHASE3_REPORT.md](docs/PHASE3_REPORT.md).
+
+The five-phase roadmap (colour/audio/compositing → AI & plugins) lives
+in [docs/ROADMAP.md](docs/ROADMAP.md). What is *not* implemented yet is
+listed there honestly rather than implied.
 
 ## Install on Ubuntu
 
 ```bash
 sudo apt update
-sudo apt install -y ffmpeg python3 python3-venv python3-pip
+sudo apt install -y ffmpeg python3 python3-venv python3-pip \
+  libgl1 libegl1 libxkbcommon0 libdbus-1-3
 
 git clone <this-repository>
 cd VN_VIDEO_EDITOR_LINUX/opencut-studio
@@ -110,7 +132,7 @@ uses as a fallback.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest        # 31 tests, incl. the Phase 1 acceptance
+.venv/bin/python -m pytest        # 118 tests, incl. acceptance + regression
 .venv/bin/python main.py --self-test
 ```
 
@@ -128,5 +150,5 @@ recorded in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 ## Project documents
 
 - [Architecture](docs/ARCHITECTURE.md) · [Dependencies & licences](docs/DEPENDENCIES.md)
-- [Roadmap](docs/ROADMAP.md) · [Phase 1 report](docs/PHASE1_REPORT.md)
+- [Roadmap](docs/ROADMAP.md) · [Phase 1 report](docs/PHASE1_REPORT.md) · [Phase 2 report](docs/PHASE2_REPORT.md) · [Phase 3 report](docs/PHASE3_REPORT.md)
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)

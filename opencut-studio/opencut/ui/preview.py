@@ -21,8 +21,8 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QToolButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import engine
 from ..engine import Project
@@ -110,6 +110,18 @@ class PreviewWidget(QWidget):
         row.addWidget(self._stop_btn)
         row.addWidget(self._time_label)
         row.addStretch(1)
+        # Phase 3: preview quality selector
+        self._quality = QComboBox()
+        self._quality.addItem("Draft (fast)", 0.25)
+        self._quality.addItem("Low", 0.4)
+        self._quality.addItem("Half", 0.5)
+        self._quality.addItem("Full", 1.0)
+        self._quality.setCurrentIndex(2)   # Half is default
+        self._quality.setToolTip("Preview quality (lower = faster)")
+        self._quality.currentIndexChanged.connect(
+            lambda _: self.refresh())
+        row.addWidget(QLabel("Quality:"))
+        row.addWidget(self._quality)
         layout.addLayout(row)
 
         self._clock = QTimer(self)
@@ -145,7 +157,10 @@ class PreviewWidget(QWidget):
         assert self.project is not None
         w = int(self.project.settings.width)
         h = int(self.project.settings.height)
-        scale = min(1.0, MAX_STILL_W / max(1, w))
+        quality = self._quality.currentData() if hasattr(self, '_quality') else 0.5
+        if quality is None:
+            quality = 0.5
+        scale = min(float(quality), MAX_STILL_W / max(1, w))
         return max(16, int(w * scale) // 2 * 2), max(16, int(h * scale) // 2 * 2)
 
     def request_still(self, t: float) -> None:

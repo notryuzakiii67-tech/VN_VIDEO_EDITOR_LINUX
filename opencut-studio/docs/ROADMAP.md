@@ -29,16 +29,25 @@ engine bugs found by that test were fixed in `vn_editor.core` (speed
 curves, static scale, audio placement). See
 [PHASE2_REPORT.md](PHASE2_REPORT.md).
 
-## Phase 3 — Performance and professional media workflows (next)
+## Phase 3 — Performance and professional media workflows ✅ (v0.3.0)
 
-Proxy media, configurable preview quality, thumbnail/waveform caching to
-disk, background media analysis, render queue, autosave + crash recovery
-(the engine already stores autosaves/recovery slots — needs wiring),
-media relinking UI (engine `relink` exists and is tested), project/media
-search improvements, VFR media testing, performance measurements on
-long/high-resolution projects.
+Background worker pool (QThreadPool-based) for thumbnails, waveforms,
+proxy generation, media analysis, and exports. Proxy media generation
+(FFmpeg transcode to half-height H.264, cached in the project cache
+directory, skipped for already-small or audio-only assets). Configurable
+preview quality selector (Draft/Low/Half/Full) that scales scrub stills
+before rendering. Autosave timer with 20-second tick writing recovery
+snapshots; startup recovery dialog offers to restore the latest snapshot.
+Media relinking UI (context menu and File menu) for missing files using
+the engine's `relink()`. Render queue for background exports with
+sequential job execution, progress, and cancellation. VFR detection on
+import (flags non-standard fps and frame-count mismatches, warns the
+user). Media panel enhancements: proxy/missing indicators on asset labels,
+proxy generation from context menu, relink from context menu. Export
+dialog gains an "Add to queue" button alongside "Export now". See
+[PHASE3_REPORT.md](PHASE3_REPORT.md).
 
-## Phase 4 — Professional colour, audio, compositing, effects
+## Phase 4 — Professional colour, audio, compositing, effects (next)
 
 Colour: brightness/contrast/saturation/temperature, curves, wheels, LUT
 import, before/after, scopes. Audio: EQ, compression, limiting, noise

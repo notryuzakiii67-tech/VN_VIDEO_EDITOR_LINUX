@@ -18,7 +18,7 @@ import json
 import os
 from typing import List, Optional
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, QTimer, QThreadPool
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog,
                                QDialogButtonBox, QDoubleSpinBox, QFileDialog,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog,
                                QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, __version__, engine
+from ..background import MediaAnalysisWorker, RenderQueue
 from ..media import importer
 from ..project import store
 from ..timeline import ops, titles
@@ -52,6 +53,15 @@ class MainWindow(QMainWindow):
         self.history: Optional[engine.History] = None
         self.project_path: Optional[str] = None
         self._settings = QSettings("OpenCutStudio", APP_NAME)
+        self._render_queue = RenderQueue(self)
+        self._render_queue.job_done.connect(self._export_job_done)
+        self._render_queue.queue_empty.connect(
+            lambda: self.statusBar().showMessage("Export queue empty"))
+        # Autosave timer (Phase 3)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._autosave_tick)
+        self._autosave_timer.start(20_000)   # check every 20 s
+        self._analysis_pool = QThreadPool.globalInstance()
 
         self.setWindowTitle(APP_NAME)
         self.resize(1440, 900)
@@ -60,6 +70,8 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self.load_project(store.create_project("Untitled project", "16:9"),
                           None)
+        # Crash recovery check (Phase 3)
+        QTimer.singleShot(500, self._check_recovery)
 
     # ------------------------------------------------------------------ #
     #  Construction
@@ -93,10 +105,18 @@ class MainWindow(QMainWindow):
             "Ripple delete", "Ctrl+Shift+Del", self.ripple_delete_clips,
             "Delete the selected clip(s) and close the gap")
         self.act_text = act("Add text", "Ctrl+T", self.add_text)
+        # Phase 3 actions
+        self.act_proxies = act(
+            "Generate proxies", "", self._generate_proxies,
+            "Create lightweight preview proxies for large video files")
+        self.act_relink = act(
+            "Relink missing media…", "", self._relink_missing_media,
+            "Locate and relink any missing media files")
         for a in (self.act_new, self.act_open, self.act_save, self.act_save_as,
                   self.act_import, self.act_export, self.act_quit,
                   self.act_undo, self.act_redo, self.act_split, self.act_dup,
-                  self.act_del, self.act_ripple_del, self.act_text):
+                  self.act_del, self.act_ripple_del, self.act_text,
+                  self.act_proxies, self.act_relink):
             self.addAction(a)
 
     def _build_ui(self) -> None:
@@ -207,6 +227,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addActions([self.act_import, self.act_export])
         file_menu.addSeparator()
+        file_menu.addAction(self.act_proxies)
+        file_menu.addAction(self.act_relink)
+        file_menu.addSeparator()
         file_menu.addAction(self.act_quit)
 
         edit_menu = mb.addMenu("Edit")
@@ -242,6 +265,7 @@ class MainWindow(QMainWindow):
             self._remember_recent(path)
         self.preview.set_project(project)
         self.timeline.set_project(project, self.history)
+        self.media_panel._project_ref = project   # for relink
         self.media_panel.set_assets(project.assets)
         self.inspector.set_selection(project, self.history, [])
         self._refresh_chrome()
@@ -398,6 +422,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Imported {len(report.added)} file(s) — double-click one "
                 "to add it to the timeline")
+        # Phase 3: analyse imported media for VFR in background
+        new_ids = [a.id for a in report.added]
+        self._analyse_imported_media(new_ids)
 
     def add_asset_to_timeline(self, asset_id: str) -> None:
         if self.project is None or self.history is None:
@@ -747,9 +774,172 @@ class MainWindow(QMainWindow):
             "Slide tools\n"
             "Ctrl+mouse wheel (timeline) — zoom")
 
+    # ------------------------------------------------------------------ #
+    #  Phase 3: Autosave / crash recovery / relink / proxy / VFR
+    # ------------------------------------------------------------------ #
+    def _autosave_tick(self) -> None:
+        """Called by the autosave timer; writes a recovery snapshot if dirty."""
+        if self.project is None or self.history is None:
+            return
+        if not self.history.is_dirty:
+            return
+        try:
+            engine.autosave(self.project, self.project_path)
+        except Exception:
+            pass              # autosave must never crash the app
+
+    def _check_recovery(self) -> None:
+        """On startup, offer to restore any recovery snapshots."""
+        if not self.isVisible():
+            return           # skip in test / headless mode
+        try:
+            entries = engine.recovery_entries()
+        except Exception:
+            return
+        if not entries:
+            return
+        newest = entries[0]
+        age_min = 0.0
+        import time as _time
+        if "time" in newest:
+            age_min = (_time.time() - newest["time"]) / 60.0
+        name = newest.get("name", "Untitled project")
+        age_str = f"{age_min:.0f} min ago" if age_min < 120 else "a while ago"
+        try:
+            box = QMessageBox(self)
+            box.setWindowTitle("Recover project?")
+            box.setText(f"A previous session's project was found:\n\n"
+                        f"  {name}\n  (saved {age_str})")
+            box.setInformativeText("Would you like to recover it?")
+            recover = box.addButton("Recover", QMessageBox.AcceptRole)
+            discard = box.addButton("Discard", QMessageBox.DestructiveRole)
+            box.exec()
+            clicked = box.clickedButton()
+        except RuntimeError:
+            return           # widget was deleted (e.g. during test teardown)
+        if clicked is recover:
+            slot = newest.get("slot", "")
+            slot_path = str(engine.recovery_dir() / slot) if slot else ""
+            if slot_path and os.path.exists(slot_path):
+                try:
+                    project = store.load_project(slot_path)
+                    self.load_project(project,
+                                      newest.get("project_path") or None)
+                    self.statusBar().showMessage("Project recovered")
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self, "Recovery failed",
+                        f"Could not load the recovery file:\n{exc}")
+        # Clear the recovery entry either way
+        if newest.get("slot"):
+            try:
+                engine.clear_recovery(
+                    str(engine.recovery_dir() / newest["slot"]))
+            except Exception:
+                pass
+
+    def _relink_missing_media(self) -> None:
+        """Offer to relink any missing assets."""
+        if self.project is None:
+            return
+        missing = [a for a in self.project.assets
+                   if not os.path.exists(a.path)]
+        if not missing:
+            self.statusBar().showMessage("No missing media")
+            return
+        for asset in missing:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Relink media")
+            msg.setText(f"File not found:\n{asset.name}\n\n{asset.path}")
+            msg.setInformativeText("Locate the file to restore it?")
+            browse = msg.addButton("Browse…", QMessageBox.AcceptRole)
+            skip = msg.addButton("Skip", QMessageBox.RejectRole)
+            msg.exec()
+            if msg.clickedButton() is browse:
+                path, _ = QFileDialog.getOpenFileName(
+                    self, f"Locate {asset.name}", "",
+                    "Media files (*.*);;All files (*)")
+                if path:
+                    count = engine.relink_media(self.project, asset.id, path)
+                    self.statusBar().showMessage(
+                        f"Relinked {asset.name}: {count} clip(s) updated")
+                    self._after_edit()
+
+    def _generate_proxies(self) -> None:
+        """Generate proxy media for all large video assets."""
+        if self.project is None:
+            return
+        proxy_dir = os.path.join(str(engine.cache_dir()), "opencut-proxies")
+        os.makedirs(proxy_dir, exist_ok=True)
+        generated = 0
+        for asset in self.project.assets:
+            if asset.kind != "video":
+                continue
+            if asset.proxy_path and os.path.exists(asset.proxy_path):
+                continue
+            if asset.height <= 540:
+                continue        # already small
+            out = os.path.join(proxy_dir, f"{asset.id}.mp4")
+            if engine.generate_proxy(asset.path, out, proxy_height=540):
+                asset.proxy_path = out
+                generated += 1
+        if generated:
+            self.statusBar().showMessage(
+                f"Generated {generated} proxy file(s)")
+            self._after_edit()
+        else:
+            self.statusBar().showMessage("No proxies needed")
+
+    def _analyse_imported_media(self, asset_ids: list) -> None:
+        """Run background VFR detection on newly imported assets."""
+        if not asset_ids:
+            return
+        vfr_assets: list = []
+        from PySide6.QtCore import QObject, Signal as _Sig, QRunnable as _QR
+
+        class _Sig(QObject):
+            done = _Sig(str, dict)
+        _sig = _Sig(self)
+
+        def _on_done(aid: str, result: dict) -> None:
+            if result.get("vfr"):
+                vfr_assets.append((aid, result.get("issues", [])))
+                # Show warning after all assets are checked
+                if len(vfr_assets) == 1 and len(asset_ids) == 1:
+                    issues = "\n".join(f"• {i}" for i in vfr_assets[0][1])
+                    QMessageBox.warning(
+                        self, "Variable frame rate detected",
+                        f"This file may use a variable frame rate:\n\n{issues}\n\n"
+                        "VFR media can cause sync issues during editing. "
+                        "Consider re-encoding with a constant frame rate "
+                        "(e.g. `ffmpeg -i input.mp4 -vsync cfr -r 30 output.mp4`).")
+
+        _sig.done.connect(_on_done)
+        for aid in asset_ids:
+            asset = self.project.asset(aid) if self.project else None
+            if asset is None:
+                continue
+            worker = MediaAnalysisWorker(aid, asset.path)
+            worker.signals.done.connect(_sig.done)
+            self._analysis_pool.start(worker)
+
+    def _export_job_done(self, output: str, ok: bool, elapsed: float) -> None:
+        """Slot: an export queue job finished."""
+        if ok:
+            self.statusBar().showMessage(
+                f"Export complete: {output} ({elapsed:.1f}s)")
+        else:
+            self.statusBar().showMessage(f"Export failed: {output}")
+
+    @property
+    def render_queue(self) -> RenderQueue:
+        """The render queue (for the export dialog to submit jobs)."""
+        return self._render_queue
+
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._confirm_discard():
             self.preview.stop()
+            self._render_queue.cancel_current()
             event.accept()
         else:
             event.ignore()
