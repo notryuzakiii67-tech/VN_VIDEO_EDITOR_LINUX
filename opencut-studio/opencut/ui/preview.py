@@ -1,409 +1,424 @@
-"""Preview: scrub stills and real-time playback.
+"""Video preview widget with enhanced controls.
 
-Two paths, both using the engine's own graph compiler (the same code
-that renders exports, so the preview is honest):
-
-* **Scrubbing** renders one composited frame at the requested time with
-  ``engine.render_frame`` on a worker thread.  The project is snapshotted
-  to plain data first, so edits on the UI thread can never race a render.
-* **Playback** spawns the engine's raw-frame pipe (video) and PCM pipe
-  (audio), reads frames on a thread, paces them against the audio clock
-  (``QAudioSink.processedUSecs``) when audio exists, and falls back to a
-  wall clock for silent timelines.  If the platform has no audio device,
-  playback continues video-only.
+Features:
+- Large video preview canvas with aspect ratio support
+- Play/pause, seek bar, time display
+- Aspect ratio selector (16:9, 9:16, 1:1, 4:3, Free)
+- Fit/Fill toggle
+- Fullscreen toggle
+- Preview quality selector (Draft/Quarter/Half/Full)
+- Volume slider
 """
 from __future__ import annotations
 
 import os
-import threading
-import time
 from typing import Optional
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QToolButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QTimer, Signal, QUrl
+from PySide6.QtGui import QColor, QPainter, QPixmap
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+    _HAS_MULTIMEDIA = True
+except ImportError:
+    _HAS_MULTIMEDIA = False
+    QAudioOutput = None
+    QMediaPlayer = None
+    QVideoWidget = None
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
+from .theme import ACCENT, ACCENT_DARK, BG, BORDER, PANEL, PANEL_LIGHT, TEXT, TEXT_DIM
 from .. import engine
-from ..engine import Project
-
-try:  # audio output is optional at runtime (headless machines, no device)
-    from PySide6.QtMultimedia import QAudioFormat, QAudioSink
-except Exception:  # pragma: no cover
-    QAudioFormat = None  # type: ignore
-    QAudioSink = None  # type: ignore
-
-MAX_STILL_W = 960                 # scrub stills are capped for responsiveness
 
 
-class _StillSignals(QObject):
-    done = Signal(int, float, str)          # generation, time, png path
-
-
-class _StillJob(QRunnable):
-    def __init__(self, signals: _StillSignals, generation: int,
-                 project_data: dict, t: float, width: int, height: int,
-                 out_path: str) -> None:
-        super().__init__()
-        self.signals = signals
-        self.generation = generation
-        self.project_data = project_data
-        self.t = t
-        self.width = width
-        self.height = height
-        self.out_path = out_path
-
-    def run(self) -> None:
-        try:
-            project = Project.from_dict(self.project_data)
-            ok = engine.render_frame(project, self.t, self.width, self.height,
-                                     self.out_path)
-        except Exception:
-            ok = False
-        try:
-            self.signals.done.emit(self.generation, self.t,
-                                   self.out_path if ok else "")
-        except RuntimeError:
-            pass            # preview widget went away mid-render (app closing)
-
-
-class PreviewWidget(QWidget):
-    """Video preview with transport controls."""
-
-    time_changed = Signal(float)
-    playing_changed = Signal(bool)
-    _frame_ready = Signal(object, object)   # QImage, playback state
-    _playback_done = Signal(object)         # playback state
+class PreviewCanvas(QWidget):
+    """Black video canvas supporting pixmap overlays and direct paint."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.project: Optional[Project] = None
-        self.time = 0.0
-        self._generation = 0
-        self._pool = QThreadPool.globalInstance()
-        self._signals = _StillSignals(self)
-        self._signals.done.connect(self._still_done)
-        self._playback: Optional[dict] = None
+        self._pixmap: Optional[QPixmap] = None
+        self._aspect_ratio = 16 / 9
+        self._fit_mode = "fit"  # "fit" or "fill"
+        self.setMinimumSize(320, 180)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAutoFillBackground(False)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        self._screen = QLabel("Import media and add it to the timeline")
-        self._screen.setAlignment(QtAlignCenter())
-        self._screen.setMinimumSize(320, 180)
-        self._screen.setStyleSheet(
-            "background:#000000; color:#9aa3ad; border-radius:8px;")
-        layout.addWidget(self._screen, 1)
+    def setPixmap(self, pix: QPixmap) -> None:
+        self._pixmap = pix
+        self.update()
 
-        row = QHBoxLayout()
-        self._play_btn = QToolButton()
-        self._play_btn.setText("▶")
-        self._play_btn.setToolTip("Play / pause (Space, over the preview)")
-        self._play_btn.clicked.connect(self.toggle_play)
-        self._stop_btn = QToolButton()
-        self._stop_btn.setText("■")
-        self._stop_btn.setToolTip("Stop and return to the playhead")
-        self._stop_btn.clicked.connect(self.stop)
-        self._time_label = QLabel("0:00.0 / 0:00.0")
-        self._time_label.setObjectName("dim")
-        row.addWidget(self._play_btn)
-        row.addWidget(self._stop_btn)
-        row.addWidget(self._time_label)
-        row.addStretch(1)
-        # Phase 3: preview quality selector
+    def set_aspect_ratio(self, ratio: float) -> None:
+        self._aspect_ratio = ratio
+        self.update()
+
+    def set_fit_mode(self, mode: str) -> None:
+        self._fit_mode = mode
+        self.update()
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#0a0c10"))
+        src = self._pixmap
+        if src and not src.isNull():
+            canvas = self.rect()
+            if self._fit_mode == "fill":
+                scale = max(canvas.width() / src.width(),
+                            canvas.height() / src.height())
+            else:
+                scale = min(canvas.width() / src.width(),
+                            canvas.height() / src.height())
+            w = int(src.width() * scale)
+            h = int(src.height() * scale)
+            x = (canvas.width() - w) // 2
+            y = (canvas.height() - h) // 2
+            p.drawPixmap(x, y, w, h, src)
+        else:
+            p.setPen(QColor(TEXT_DIM))
+            p.drawText(self.rect(), Qt.AlignCenter,
+                       "Import media to begin editing")
+        p.end()
+
+
+class PreviewWidget(QWidget):
+    """Video preview panel with enhanced controls."""
+
+    time_changed = Signal(float)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._path: Optional[str] = None
+        self._duration: float = 0.0
+        self._current: float = 0.0
+        self._playing = False
+        self._player: Optional[QMediaPlayer] = None
+        self._audio_out: Optional[QAudioOutput] = None
+        self._video_w: Optional[QVideoWidget] = None
+        self._seeking = False
+        self._quality_str = "Half"
+        self._project = None
+        self._pool = engine.subprocess
+        self._setup_ui()
+        self._timer = QTimer(self)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._tick)
+
+    def _setup_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Video canvas
+        self._canvas = PreviewCanvas()
+        root.addWidget(self._canvas, 1)
+
+        # Aspect ratio + quality toolbar
+        toolbar = QWidget()
+        toolbar.setStyleSheet(f"background:{PANEL};")
+        tlay = QHBoxLayout(toolbar)
+        tlay.setContentsMargins(8, 4, 8, 4)
+        tlay.setSpacing(6)
+
+        # Aspect ratio selector
+        ar_label = QLabel("Ratio:")
+        ar_label.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
+        tlay.addWidget(ar_label)
+        self._ar_combo = QComboBox()
+        self._ar_combo.addItems(["16:9", "9:16", "1:1", "4:3", "Free"])
+        self._ar_combo.setCurrentText("16:9")
+        self._ar_combo.currentTextChanged.connect(self._on_aspect_ratio)
+        self._ar_combo.setStyleSheet(f"""
+            QComboBox {{ background:{PANEL_LIGHT}; border:1px solid {BORDER};
+                        border-radius:4px; padding:2px 6px; font-size:11px; }}
+            QComboBox QAbstractItemView {{ background:{PANEL_LIGHT};
+                selection-background-color:{ACCENT_DARK}; }}
+        """)
+        tlay.addWidget(self._ar_combo)
+
+        # Fit/Fill toggle
+        self._fit_btn = QPushButton("Fit")
+        self._fit_btn.setFixedWidth(36)
+        self._fit_btn.setStyleSheet(f"""
+            QPushButton {{ background:{PANEL_LIGHT}; border:1px solid {BORDER};
+                          border-radius:4px; padding:2px; font-size:11px; }}
+            QPushButton:hover {{ border-color:{ACCENT}; }}
+        """)
+        self._fit_btn.clicked.connect(self._toggle_fit)
+        tlay.addWidget(self._fit_btn)
+
+        tlay.addStretch(1)
+
+        # Preview quality
+        q_label = QLabel("Quality:")
+        q_label.setStyleSheet(f"color:{TEXT_DIM}; font-size:11px;")
+        tlay.addWidget(q_label)
         self._quality = QComboBox()
-        self._quality.addItem("Draft (fast)", 0.25)
-        self._quality.addItem("Low", 0.4)
-        self._quality.addItem("Half", 0.5)
-        self._quality.addItem("Full", 1.0)
-        self._quality.setCurrentIndex(2)   # Half is default
-        self._quality.setToolTip("Preview quality (lower = faster)")
-        self._quality.currentIndexChanged.connect(
-            lambda _: self.refresh())
-        row.addWidget(QLabel("Quality:"))
-        row.addWidget(self._quality)
-        layout.addLayout(row)
+        self._quality.addItems(["Draft", "Quarter", "Half", "Full"])
+        self._quality.setCurrentIndex(2)  # Default to Half
+        self._quality.currentTextChanged.connect(self._on_quality)
+        self._quality.setStyleSheet(self._ar_combo.styleSheet())
+        tlay.addWidget(self._quality)
 
-        self._clock = QTimer(self)
-        self._clock.setInterval(50)
-        self._clock.timeout.connect(self._tick_clock)
-        self.setFocusPolicy(QtStrongFocus())
+        # Fullscreen button
+        self._fs_btn = QPushButton("⛶")
+        self._fs_btn.setFixedSize(28, 28)
+        self._fs_btn.setToolTip("Toggle fullscreen (F11)")
+        self._fs_btn.setStyleSheet(f"""
+            QPushButton {{ background:{PANEL_LIGHT}; border:1px solid {BORDER};
+                          border-radius:4px; font-size:14px; }}
+            QPushButton:hover {{ border-color:{ACCENT}; }}
+        """)
+        self._fs_btn.clicked.connect(self._toggle_fullscreen)
+        tlay.addWidget(self._fs_btn)
+
+        root.addWidget(toolbar)
+
+        # Playback controls
+        controls = QWidget()
+        controls.setStyleSheet(f"background:{PANEL};")
+        cl = QHBoxLayout(controls)
+        cl.setContentsMargins(10, 6, 10, 6)
+        cl.setSpacing(8)
+
+        # Play/Pause
+        self._play_btn = QPushButton("▶")
+        self._play_btn.setFixedSize(36, 36)
+        self._play_btn.setStyleSheet(f"""
+            QPushButton {{ background:{ACCENT_DARK}; border:1px solid {ACCENT};
+                          border-radius:18px; font-size:16px; font-weight:bold; }}
+            QPushButton:hover {{ background:{ACCENT}; color:#0b1520; }}
+        """)
+        self._play_btn.clicked.connect(self.toggle_play)
+        cl.addWidget(self._play_btn)
+
+        # Time display
+        self._time_label = QLabel("0:00.0 / 0:00.0")
+        self._time_label.setStyleSheet(f"color:{TEXT_DIM}; font-size:12px;")
+        self._time_label.setFixedWidth(120)
+        cl.addWidget(self._time_label)
+
+        # Seek slider
+        self._seek = QSlider(Qt.Horizontal)
+        self._seek.setRange(0, 1000)
+        self._seek.sliderPressed.connect(lambda: setattr(self, '_seeking', True))
+        self._seek.sliderReleased.connect(self._seek_release)
+        cl.addWidget(self._seek, 1)
+
+        # Volume
+        vol_icon = QLabel("🔊")
+        vol_icon.setStyleSheet("font-size:14px;")
+        cl.addWidget(vol_icon)
+        self._volume = QSlider(Qt.Horizontal)
+        self._volume.setRange(0, 100)
+        self._volume.setValue(100)
+        self._volume.setFixedWidth(80)
+        self._volume.valueChanged.connect(self._set_volume)
+        cl.addWidget(self._volume)
+
+        root.addWidget(controls)
 
     # ------------------------------------------------------------------ #
-    def set_project(self, project: Optional[Project]) -> None:
-        self.stop()
-        self.project = project
-        self.time = 0.0
-        self._update_time_label()
-        self.request_still(0.0)
+    #  Aspect ratio / fit / quality / fullscreen
+    # ------------------------------------------------------------------ #
+    def _on_aspect_ratio(self, text: str) -> None:
+        ratios = {
+            "16:9": 16/9, "9:16": 9/16, "1:1": 1.0,
+            "4:3": 4/3, "Free": 16/9,
+        }
+        self._canvas.set_aspect_ratio(ratios.get(text, 16/9))
 
-    def seek(self, t: float) -> None:
-        """Scrub to time ``t`` (pauses playback, like other editors)."""
-        if self._playback is not None:
-            self.stop()
-        self.time = max(0.0, float(t))
-        self._update_time_label()
-        self.request_still(self.time)
+    def _toggle_fit(self) -> None:
+        if self._fit_btn.text() == "Fit":
+            self._fit_btn.setText("Fill")
+            self._canvas.set_fit_mode("fill")
+        else:
+            self._fit_btn.setText("Fit")
+            self._canvas.set_fit_mode("fit")
 
-    def refresh(self) -> None:
-        """Re-render the current frame (after an edit)."""
-        if self._playback is None:
-            self.request_still(self.time)
+    def _on_quality(self, text: str) -> None:
+        self._quality_str = text
+
+    def _toggle_fullscreen(self) -> None:
+        win = self.window()
+        if win.isFullScreen():
+            win.showNormal()
+        else:
+            win.showFullScreen()
+
+    def keyPressEvent(self, ev) -> None:
+        if ev.key() == Qt.Key_F11:
+            self._toggle_fullscreen()
+        else:
+            super().keyPressEvent(ev)
 
     # ------------------------------------------------------------------ #
-    #  Scrub stills
+    #  Media loading and playback
     # ------------------------------------------------------------------ #
-    def _still_size(self) -> tuple:
-        assert self.project is not None
-        w = int(self.project.settings.width)
-        h = int(self.project.settings.height)
-        quality = self._quality.currentData() if hasattr(self, '_quality') else 0.5
-        if quality is None:
-            quality = 0.5
-        scale = min(float(quality), MAX_STILL_W / max(1, w))
-        return max(16, int(w * scale) // 2 * 2), max(16, int(h * scale) // 2 * 2)
+    def load(self, path: str, *, duration: float = 0.0) -> None:
+        self._path = path
+        self._duration = duration
+        self._current = 0.0
+        self._update_time()
+        self._seek.setValue(0)
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi", ".ts"):
+            self._init_player(path)
+            self._render_at(0.0)
+        else:
+            self._kill_player()
+            self._pool.submit(
+                lambda: engine.make_thumbnail(path, None, at=0.0, width=640),
+                lambda thumb: self._show_thumb(thumb))
 
-    def request_still(self, t: float) -> None:
-        if self.project is None or not engine.ffmpeg_available():
-            if self.project is not None and not engine.ffmpeg_available():
-                self._screen.setText(
-                    "FFmpeg is not installed, so frames cannot be rendered.\n"
-                    "Install it with:  sudo apt install ffmpeg")
+    def _init_player(self, path: str) -> None:
+        self._kill_player()
+        if not _HAS_MULTIMEDIA:
             return
-        self._generation += 1
-        w, h = self._still_size()
-        out_dir = os.path.join(str(engine.cache_dir()), "opencut-preview")
-        os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"still_{self._generation % 8}.png")
-        job = _StillJob(self._signals, self._generation,
-                        self.project.to_dict(), float(t), w, h, out_path)
-        self._pool.start(job)
+        try:
+            self._audio_out = QAudioOutput()
+            self._audio_out.setVolume(self._volume.value() / 100)
+            self._player = QMediaPlayer()
+            self._player.setAudioOutput(self._audio_out)
+            self._video_w = QVideoWidget()
+            self._player.setVideoOutput(self._video_w)
+            self._player.setSource(QUrl.fromLocalFile(path))
+            self._player.positionChanged.connect(self._on_pos)
+            self._player.durationChanged.connect(self._on_dur)
+        except Exception:
+            self._player = None
 
-    def _still_done(self, generation: int, t: float, path: str) -> None:
-        if generation != self._generation or self._playback is not None:
-            return                                    # superseded request
-        if not path or not os.path.exists(path):
-            self._screen.setText("Could not render this frame")
-            return
-        pix = QPixmap(path)
-        if pix.isNull():
-            return
-        self._show_pixmap(pix)
+    def _kill_player(self) -> None:
+        if self._player is not None:
+            try:
+                self._player.stop()
+                self._player.setSource(QUrl())
+            except Exception:
+                pass
+            self._player = None
+            self._audio_out = None
+            self._video_w = None
 
-    def _show_pixmap(self, pix: QPixmap) -> None:
-        scaled = pix.scaled(self._screen.size(),
-                            QtKeepAspectRatio(), QtSmoothTransformation())
-        self._screen.setPixmap(scaled)
+    def _show_thumb(self, thumb: object) -> None:
+        if isinstance(thumb, str) and os.path.exists(thumb):
+            self._canvas.setPixmap(QPixmap(thumb))
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        pix = self._screen.pixmap()
-        if pix is not None and not pix.isNull() and self._playback is None:
-            self._show_pixmap(pix)
+    def _render_at(self, t: float) -> None:
+        if self._path:
+            self._pool.submit(
+                lambda: engine.make_thumbnail(self._path, None,
+                                              at=t, width=640),
+                lambda thumb: self._show_thumb(thumb))
 
     # ------------------------------------------------------------------ #
     #  Playback
     # ------------------------------------------------------------------ #
-    @property
-    def playing(self) -> bool:
-        return self._playback is not None
-
     def toggle_play(self) -> None:
-        if self._playback is not None:
-            self.stop()
-            self.request_still(self.time)
+        if self._playing:
+            self.pause()
         else:
-            self.play(self.time)
+            self.play()
 
-    def play(self, from_time: float = 0.0) -> None:
-        if self.project is None or not engine.ffmpeg_available():
-            return
-        total = self.project.duration
-        if total <= 0.01:
-            return
-        start = float(from_time)
-        if start >= total - 0.03:
-            start = 0.0
-        self.stop()
-        opts = engine.options_from_settings(self.project, preview=True)
-        w, h = opts.out_size()
-        fps = float(opts.fps or 30.0)
-        state: dict = {"stop": False, "start": start, "t0": start,
-                       "w": w, "h": h, "fps": fps, "audio": None,
-                       "video_proc": None, "audio_proc": None,
-                       "wall": time.monotonic()}
-        self._playback = state
-        try:
-            argv, _builder, _dur = engine.build_pipe_command(
-                self.project, opts, start=start, duration=total - start)
-            proc = engine.popen_ffmpeg(argv, stdout=engine.subprocess.PIPE,
-                                       stderr=engine.subprocess.DEVNULL)
-            state["video_proc"] = proc
-        except Exception:
-            self._playback = None
-            return
-        self._start_audio(state, total)
-        reader = threading.Thread(target=self._read_frames, args=(state,),
-                                  daemon=True)
-        reader.start()
-        self._clock.start()
+    def play(self) -> None:
+        self._playing = True
         self._play_btn.setText("⏸")
-        self.playing_changed.emit(True)
+        if self._player is not None:
+            self._player.play()
+        self._timer.start()
 
-
-    def _start_audio(self, state: dict, total: float) -> None:
-        if QAudioSink is None:
-            return
-        try:
-            opts = engine.options_from_settings(self.project, preview=True)
-            argv = engine.build_audio_pipe_command(
-                self.project, opts, start=state["start"],
-                duration=total - state["start"], sample_rate=48000)
-            if not argv:
-                return
-            proc = engine.popen_ffmpeg(argv, stdout=engine.subprocess.PIPE,
-                                       stderr=engine.subprocess.DEVNULL)
-            fmt = QAudioFormat()
-            fmt.setSampleRate(48000)
-            fmt.setChannelCount(2)
-            fmt.setSampleFormat(QAudioFormat.Int16)
-            sink = QAudioSink(fmt)
-            device = sink.start()
-            if device is None:
-                engine.terminate_process(proc)
-                return
-            state["audio"] = (sink, device)
-            state["audio_proc"] = proc
-            threading.Thread(target=self._pump_audio, args=(state,),
-                             daemon=True).start()
-        except Exception:
-            state["audio"] = None
-
-    def _pump_audio(self, state: dict) -> None:
-        _sink, device = state["audio"]
-        proc = state["audio_proc"]
-        try:
-            while not state["stop"]:
-                chunk = proc.stdout.read(8192)
-                if not chunk:
-                    break
-                device.write(chunk)
-        except Exception:
-            pass
-
-    def _read_frames(self, state: dict) -> None:
-        proc = state["video_proc"]
-        w, h, fps = state["w"], state["h"], state["fps"]
-        frame_bytes = w * h * 3
-        index = 0
-        try:
-            while not state["stop"]:
-                data = proc.stdout.read(frame_bytes)
-                if not data or len(data) < frame_bytes:
-                    break
-                # pace against the audio clock when present, else the wall
-                target = index / fps
-                while not state["stop"] and self._played_seconds(state) < target:
-                    time.sleep(0.004)
-                if state["stop"]:
-                    break
-                image = QImage(data, w, h, w * 3, QImage.Format_RGB888).copy()
-                state["last_image"] = image
-                state["last_index"] = index
-                index += 1
-                # hand the frame to the UI thread (queued signal)
-                self._frame_ready.emit(image, state)
-        except Exception:
-            pass
-        finally:
-            self._playback_done.emit(state)
-
-    def _played_seconds(self, state: dict) -> float:
-        audio = state.get("audio")
-        if audio is not None:
-            sink, _device = audio
-            try:
-                return sink.processedUSecs() / 1_000_000.0
-            except Exception:
-                pass
-        return time.monotonic() - state["wall"]
-
-    def _present(self, image: QImage, state: dict) -> None:
-        if self._playback is not state:
-            return
-        self._show_pixmap(QPixmap.fromImage(image))
-
-    def _playback_finished(self, state: dict) -> None:
-        if self._playback is not state:
-            return
-        total = self.project.duration if self.project else 0.0
-        at_end = self.time >= total - 0.05
-        self.stop()
-        if at_end:
-            self.time = total
-        self._update_time_label()
-        self.request_still(self.time)
-        self.time_changed.emit(self.time)
-
-    def _tick_clock(self) -> None:
-        state = self._playback
-        if state is None or self.project is None:
-            return
-        self.time = min(self.project.duration,
-                        state["t0"] + self._played_seconds(state))
-        self._update_time_label()
-        self.time_changed.emit(self.time)
+    def pause(self) -> None:
+        self._playing = False
+        self._play_btn.setText("▶")
+        if self._player is not None:
+            self._player.pause()
+        self._timer.stop()
 
     def stop(self) -> None:
-        state = self._playback
-        if state is None:
-            return
-        state["stop"] = True
-        self._playback = None
-        self._clock.stop()
-        for key in ("video_proc", "audio_proc"):
-            proc = state.get(key)
-            if proc is not None:
-                engine.terminate_process(proc)
-        audio = state.get("audio")
-        if audio is not None:
-            try:
-                audio[0].stop()
-            except Exception:
-                pass
+        self._playing = False
         self._play_btn.setText("▶")
-        self.playing_changed.emit(False)
+        if self._player is not None:
+            self._player.stop()
+        self._timer.stop()
 
-    # ------------------------------------------------------------------ #
-    def _update_time_label(self) -> None:
-        from .theme import format_time
-        total = self.project.duration if self.project else 0.0
+    def seek(self, t: float) -> None:
+        t = max(0.0, min(t, self._duration))
+        self._current = t
+        self._update_time()
+        if not self._seeking:
+            self._seek.blockSignals(True)
+            self._seek.setValue(
+                int(t / self._duration * 1000) if self._duration else 0)
+            self._seek.blockSignals(False)
+        if self._player is not None:
+            self._player.setPosition(int(t * 1000))
+        else:
+            self._render_at(t)
+
+    def _seek_release(self) -> None:
+        self._seeking = False
+        frac = self._seek.value() / 1000
+        self.seek(frac * self._duration)
+
+    def _tick(self) -> None:
+        if self._playing:
+            if self._player is None:
+                self._current += 0.1
+                if self._current > self._duration > 0:
+                    self._current = 0.0
+                self._update_time()
+                self.time_changed.emit(self._current)
+
+    def _on_pos(self, ms: int) -> None:
+        self._current = ms / 1000.0
+        self._update_time()
+        if not self._seeking:
+            self._seek.blockSignals(True)
+            self._seek.setValue(
+                int(self._current / self._duration * 1000)
+                if self._duration else 0)
+            self._seek.blockSignals(False)
+        self.time_changed.emit(self._current)
+
+    def _on_dur(self, ms: int) -> None:
+        d = ms / 1000.0
+        if d > 0:
+            self._duration = d
+
+    def _update_time(self) -> None:
+        def fmt(s: float) -> str:
+            m = int(s // 60)
+            sec = s - m * 60
+            return f"{m}:{sec:04.1f}"
         self._time_label.setText(
-            f"{format_time(self.time)} / {format_time(total)}")
+            f"{fmt(self._current)} / {fmt(self._duration)}")
 
-    def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() == Qt.Key_Space:
-            self.toggle_play()
-            event.accept()
-            return
-        super().keyPressEvent(event)
+    def _set_volume(self, v: int) -> None:
+        if self._audio_out is not None:
+            self._audio_out.setVolume(v / 100)
 
+    def refresh(self) -> None:
+        """Refresh the preview (re-render current frame)."""
+        if self._current > 0 and self._path:
+            self._render_at(self._current)
 
-def QtAlignCenter():  # tiny helper to keep the import list short
-    from PySide6.QtCore import Qt
-    return Qt.AlignCenter
+    def set_project(self, project) -> None:
+        """Store reference to the current project."""
+        self._project = project
 
-
-def QtKeepAspectRatio():
-    from PySide6.QtCore import Qt
-    return Qt.KeepAspectRatio
-
-
-def QtSmoothTransformation():
-    from PySide6.QtCore import Qt
-    return Qt.SmoothTransformation
-
-
-def QtStrongFocus():
-    from PySide6.QtCore import Qt
-    return Qt.StrongFocus
+    def _still_size(self):
+        """Return (width, height) for still image rendering based on quality."""
+        quality_map = {
+            "Draft": 320, "Quarter": 480,
+            "Half": 640, "Full": 1280,
+        }
+        name = self._quality.currentText()
+        w = quality_map.get(name, 640)
+        h = int(w * 9 / 16)
+        return (w, h)

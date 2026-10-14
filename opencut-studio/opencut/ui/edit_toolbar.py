@@ -11,12 +11,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSizePolicy,
     QSlider,
     QWidget,
 )
 
-from .theme import ACCENT, ACCENT_DARK, BG, BORDER, PANEL, PANEL_LIGHT, TEXT, TEXT_DIM
+from .theme import ACCENT, ACCENT_DARK, BORDER, PANEL, PANEL_LIGHT, TEXT, TEXT_DIM
 
 
 class EditToolbar(QWidget):
@@ -42,7 +41,6 @@ class EditToolbar(QWidget):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(4)
 
-        # Primary actions (icon-buttons)
         def btn(text: str, tip: str, signal: Signal, accent: bool = False):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -61,11 +59,11 @@ class EditToolbar(QWidget):
             layout.addWidget(b)
             return b
 
-        self._split_btn = btn("✂ Split", "Split at playhead (Ctrl+K)",
+        self._split_btn = btn("Split", "Split at playhead (Ctrl+K)",
                               self.split_requested)
-        self._dup_btn = btn("⧉ Duplicate", "Duplicate selection (Ctrl+D)",
+        self._dup_btn = btn("Duplicate", "Duplicate selection (Ctrl+D)",
                             self.duplicate_requested)
-        self._del_btn = btn("🗑 Delete", "Delete selection (Del)",
+        self._del_btn = btn("Delete", "Delete selection (Del)",
                             self.delete_requested)
 
         # Separator
@@ -75,15 +73,15 @@ class EditToolbar(QWidget):
         layout.addWidget(sep)
 
         # Transform actions
-        self._mirror_btn = btn("↔ Mirror", "Mirror horizontally",
+        self._mirror_btn = btn("Mirror", "Mirror horizontally",
                                self.mirror_requested)
-        self._flip_btn = btn("↕ Flip", "Flip vertically",
+        self._flip_btn = btn("Flip", "Flip vertically",
                              self.flip_requested)
-        self._reverse_btn = btn("⟲ Reverse", "Reverse playback",
+        self._reverse_btn = btn("Reverse", "Reverse playback",
                                 self.reverse_requested)
-        self._freeze_btn = btn("⏸ Freeze", "Freeze frame at playhead",
+        self._freeze_btn = btn("Freeze", "Freeze frame at playhead",
                                self.freeze_requested)
-        self._extract_btn = btn("🎵 Extract", "Extract audio track",
+        self._extract_btn = btn("Extract Audio", "Extract audio track",
                                 self.extract_audio_requested)
 
         # Separator
@@ -115,7 +113,6 @@ class EditToolbar(QWidget):
         self.speed_changed.emit(speed)
 
     def set_enabled_state(self, has_selection: bool) -> None:
-        """Enable/disable buttons based on whether a clip is selected."""
         for btn in (self._split_btn, self._dup_btn, self._del_btn,
                     self._mirror_btn, self._flip_btn, self._reverse_btn,
                     self._freeze_btn, self._extract_btn):

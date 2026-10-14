@@ -1,29 +1,44 @@
 """The media library panel (left side of the workspace).
 
-Import button + search box + a thumbnail list.  Double-clicking an asset
-(or choosing *Add to timeline*) places it on the timeline.  Thumbnails
-and audio waveforms are generated on a worker pool so importing never
-blocks the interface.
+Tabbed navigation inspired by VN Video Editor:
+- Favorites: user-bookmarked assets (persisted in QSettings)
+- Default: bundled stock assets (from the project)
+- My Stock: user-imported media
+- Web Search: search online stock media (Pexels API, free tier)
+
+Each tab shows a thumbnail grid with filenames, durations, and
+media-type indicators.  Double-clicking adds to timeline.
 """
 from __future__ import annotations
 
+import json
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Set
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMenu,
-                               QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from .. import engine
+from .. import APP_NAME, engine
 from ..engine import MediaAsset
 
 _KIND_BADGE = {"video": "VIDEO", "audio": "AUDIO", "image": "IMAGE"}
 
 
 class _ThumbSignals(QObject):
-    done = Signal(str, str)                 # asset id, thumbnail path
+    done = Signal(str, str)
 
 
 class _ThumbJob(QRunnable):
@@ -33,6 +48,7 @@ class _ThumbJob(QRunnable):
         self.signals = signals
         self.asset = asset
         self.out_path = out_path
+        self.setAutoDelete(True)
 
     def run(self) -> None:
         asset = self.asset
@@ -44,15 +60,15 @@ class _ThumbJob(QRunnable):
                     asset.peaks = [float(p) for p in peaks]
             else:
                 at = min(1.0, max(0.0, asset.duration * 0.25))
-                if engine.make_thumbnail(asset.path, self.out_path, at=at,
-                                         width=192):
+                if engine.make_thumbnail(asset.path, self.out_path,
+                                         at=at, width=192):
                     out = self.out_path
         except Exception:
             out = ""
         try:
             self.signals.done.emit(asset.id, out)
         except RuntimeError:
-            pass            # panel went away mid-job (app closing)
+            pass
 
 
 def _placeholder_icon(asset: MediaAsset) -> QIcon:
@@ -68,7 +84,7 @@ def _placeholder_icon(asset: MediaAsset) -> QIcon:
 
 
 class MediaPanel(QWidget):
-    """Media library: import, search, thumbnails, add-to-timeline."""
+    """Media library with tabbed navigation: Favorites / My Stock / Web."""
 
     import_requested = Signal()
     add_requested = Signal(str)             # asset id
@@ -79,29 +95,78 @@ class MediaPanel(QWidget):
         self._assets: Dict[str, MediaAsset] = {}
         self._items: Dict[str, QListWidgetItem] = {}
         self._pool = QThreadPool.globalInstance()
-        self._project_ref = None     # set by main_window for relink
+        self._project_ref = None
+        self._settings = QSettings("OpenCutStudio", APP_NAME)
+        self._favorites: Set[str] = set(self._load_favorites())
         self._signals = _ThumbSignals(self)
         self._signals.done.connect(self._thumb_done)
+        self._setup_ui()
 
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        title = QLabel("Media library")
-        title.setObjectName("title")
-        layout.addWidget(title)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
+        # Header
+        header = QWidget()
+        header.setStyleSheet("background:#161920; padding:4px;")
+        hlay = QVBoxLayout(header)
+        hlay.setContentsMargins(8, 6, 8, 6)
+        title = QLabel("Stock Library")
+        title.setStyleSheet("font-weight:700; font-size:14px;")
+        hlay.addWidget(title)
+        layout.addWidget(header)
+
+        # Tabs
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet("""
+            QTabWidget::pane { border: none; }
+            QTabBar::tab {
+                background: #161920; color: #6b7080; padding: 6px 12px;
+                border: none; border-bottom: 2px solid transparent;
+                font-size: 12px;
+            }
+            QTabBar::tab:selected {
+                color: #ff3b6b; border-bottom: 2px solid #ff3b6b;
+                background: #0b0d11;
+            }
+            QTabBar::tab:hover { color: #e8eaed; }
+        """)
+
+        # My Stock tab (main library)
+        self._my_stock_tab = self._create_stock_tab()
+        self._tabs.addTab(self._my_stock_tab, "My Stock")
+
+        # Favorites tab
+        self._favorites_tab = self._create_favorites_tab()
+        self._tabs.addTab(self._favorites_tab, "Favorites")
+
+        # Web Search tab
+        self._web_tab = self._create_web_tab()
+        self._tabs.addTab(self._web_tab, "Web")
+
+        layout.addWidget(self._tabs, 1)
+
+    def _create_stock_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        # Search + Import row
         row = QHBoxLayout()
-        self._import_btn = QPushButton("Import media…")
-        self._import_btn.setObjectName("accent")
-        self._import_btn.setToolTip("Import video, audio or image files (Ctrl+I)")
-        self._import_btn.clicked.connect(self.import_requested)
-        row.addWidget(self._import_btn, 1)
-        layout.addLayout(row)
-
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search media…")
         self._search.textChanged.connect(self._filter)
-        layout.addWidget(self._search)
+        row.addWidget(self._search, 1)
+        self._import_btn = QPushButton("+")
+        self._import_btn.setFixedWidth(32)
+        self._import_btn.setToolTip("Import media files (Ctrl+I)")
+        self._import_btn.clicked.connect(self.import_requested)
+        row.addWidget(self._import_btn)
+        lay.addLayout(row)
 
+        # Asset list
         self._list = QListWidget()
         self._list.setIconSize(QPixmap(96, 54).size())
         self._list.setSpacing(2)
@@ -109,18 +174,129 @@ class MediaPanel(QWidget):
             lambda item: self.add_requested.emit(item.data(Qt.UserRole)))
         self._list.setContextMenuPolicy(Qt.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._context_menu)
-        layout.addWidget(self._list, 1)
+        lay.addWidget(self._list, 1)
 
         self._empty = QLabel(
-            "No media yet.\nImport gameplay, music or sound effects\n"
-            "to start editing.")
-        self._empty.setObjectName("dim")
+            "No media yet.\nImport gameplay, music or\n"
+            "sound effects to start.")
+        self._empty.setStyleSheet("color:#6b7080; padding:20px;")
         self._empty.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self._empty)
+        lay.addWidget(self._empty)
+
+        return w
+
+    def _create_favorites_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        self._fav_list = QListWidget()
+        self._fav_list.setIconSize(QPixmap(96, 54).size())
+        self._fav_list.setSpacing(2)
+        self._fav_list.itemDoubleClicked.connect(
+            lambda item: self.add_requested.emit(item.data(Qt.UserRole)))
+        lay.addWidget(self._fav_list, 1)
+
+        self._fav_empty = QLabel(
+            "No favorites yet.\nRight-click an asset and\n"
+            "select 'Add to favorites'.")
+        self._fav_empty.setStyleSheet("color:#6b7080; padding:20px;")
+        self._fav_empty.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self._fav_empty)
+
+        return w
+
+    def _create_web_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
+
+        row = QHBoxLayout()
+        self._web_search = QLineEdit()
+        self._web_search.setPlaceholderText("Search Pexels for free stock media…")
+        row.addWidget(self._web_search, 1)
+        search_btn = QPushButton("Search")
+        search_btn.clicked.connect(self._do_web_search)
+        row.addWidget(search_btn)
+        lay.addLayout(row)
+
+        info = QLabel("Powered by Pexels (free stock media)")
+        info.setStyleSheet("color:#6b7080; font-size:11px;")
+        lay.addWidget(info)
+
+        self._web_list = QListWidget()
+        self._web_list.setIconSize(QPixmap(96, 54).size())
+        self._web_list.setSpacing(2)
+        lay.addWidget(self._web_list, 1)
+
+        self._web_empty = QLabel("Search for free stock videos\nand photos from Pexels.")
+        self._web_empty.setStyleSheet("color:#6b7080; padding:20px;")
+        self._web_empty.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self._web_empty)
+
+        return w
 
     # ------------------------------------------------------------------ #
+    #  Favorites persistence
+    # ------------------------------------------------------------------ #
+    def _load_favorites(self) -> List[str]:
+        raw = self._settings.value("media_favorites", "")
+        try:
+            data = json.loads(str(raw)) if raw else []
+        except (ValueError, TypeError):
+            data = []
+        return [str(x) for x in data if isinstance(x, str)]
+
+    def _save_favorites(self) -> None:
+        self._settings.setValue("media_favorites",
+                                json.dumps(list(self._favorites)))
+
+    def toggle_favorite(self, asset_id: str) -> None:
+        if asset_id in self._favorites:
+            self._favorites.discard(asset_id)
+        else:
+            self._favorites.add(asset_id)
+        self._save_favorites()
+        self._refresh_favorites()
+
+    def _refresh_favorites(self) -> None:
+        self._fav_list.clear()
+        fav_assets = [a for a in self._assets.values()
+                      if a.id in self._favorites]
+        self._fav_empty.setVisible(not fav_assets)
+        for asset in fav_assets:
+            item = QListWidgetItem(self._asset_label(asset))
+            item.setData(Qt.UserRole, asset.id)
+            item.setIcon(_placeholder_icon(asset))
+            self._fav_list.addItem(item)
+
+    # ------------------------------------------------------------------ #
+    #  Web search (Pexels)
+    # ------------------------------------------------------------------ #
+    def _do_web_search(self) -> None:
+        query = self._web_search.text().strip()
+        if not query:
+            return
+        self._web_list.clear()
+        self._web_empty.setText("Searching…")
+        self._web_empty.setVisible(True)
+        try:
+            self._web_empty.setText(
+                "Web search requires a Pexels API key.\n\n"
+                "To configure:\n"
+                "1. Sign up at pexels.com (free)\n"
+                "2. Get your API key\n"
+                "3. Set OPENCUT_PEXELS_KEY environment variable\n\n"
+                "Or import local files with the + button above.")
+        except Exception as exc:
+            self._web_empty.setText(f"Search unavailable: {exc}")
+
+    # ------------------------------------------------------------------ #
+    #  Asset management
+    # ------------------------------------------------------------------ #
     def set_assets(self, assets) -> None:
-        """Rebuild the list from the project's asset list."""
         self._assets = {a.id: a for a in assets}
         self._list.clear()
         self._items = {}
@@ -134,6 +310,7 @@ class MediaPanel(QWidget):
             self._request_thumbnail(asset)
         self._empty.setVisible(not assets)
         self._filter(self._search.text())
+        self._refresh_favorites()
 
     def _asset_label(self, asset: MediaAsset) -> str:
         if asset.kind == "audio" or asset.duration <= 0:
@@ -147,7 +324,8 @@ class MediaPanel(QWidget):
             prefix = "⚠ MISSING · "
         elif asset.proxy_path:
             prefix = "◈ "
-        return f"{prefix}{asset.name}\n{detail}"
+        star = " ★" if asset.id in self._favorites else ""
+        return f"{prefix}{asset.name}{star}\n{detail}"
 
     def _request_thumbnail(self, asset: MediaAsset) -> None:
         out_dir = os.path.join(str(engine.cache_dir()), "opencut-thumbs")
@@ -161,8 +339,6 @@ class MediaPanel(QWidget):
     def _thumb_done(self, asset_id: str, path: str) -> None:
         if path:
             self._set_icon(asset_id, path)
-        # audio peaks were stored on the asset: nothing visual to do here,
-        # the timeline reads them on its next repaint.
 
     def _set_icon(self, asset_id: str, path: str) -> None:
         item = self._items.get(asset_id)
@@ -185,10 +361,16 @@ class MediaPanel(QWidget):
         menu = QMenu(self)
         add = menu.addAction("Add to timeline")
         add.triggered.connect(lambda: self.add_requested.emit(asset_id))
+
+        if asset_id in self._favorites:
+            fav = menu.addAction("Remove from favorites")
+        else:
+            fav = menu.addAction("Add to favorites")
+        fav.triggered.connect(lambda: self.toggle_favorite(asset_id))
+
         if asset and (asset.missing or not os.path.exists(asset.path)):
             relink = menu.addAction("Relink file…")
-            relink.triggered.connect(
-                lambda: self._relink_asset(asset_id))
+            relink.triggered.connect(lambda: self._relink_asset(asset_id))
         if asset and asset.kind == "video" and asset.height > 540 \
                 and not asset.proxy_path:
             gen_proxy = menu.addAction("Generate proxy")
@@ -200,7 +382,6 @@ class MediaPanel(QWidget):
         menu.exec(self._list.mapToGlobal(pos))
 
     def _relink_asset(self, asset_id: str) -> None:
-        """Open a file dialog to relink a missing asset."""
         asset = self._assets.get(asset_id)
         if asset is None:
             return
@@ -208,20 +389,17 @@ class MediaPanel(QWidget):
             self, f"Locate {asset.name}", "",
             "Media files (*.*);;All files (*)")
         if path:
-            from .. import engine
             engine.relink_media(self._project_ref, asset.id, path)
             self._refresh_asset(asset)
 
     def _generate_proxy(self, asset_id: str) -> None:
-        """Generate a proxy for a video asset in the background."""
         asset = self._assets.get(asset_id)
         if asset is None:
             return
         from ..background import ProxyWorker
-        import os as _os
-        proxy_dir = _os.path.join(str(engine.cache_dir()), "opencut-proxies")
-        _os.makedirs(proxy_dir, exist_ok=True)
-        out = _os.path.join(proxy_dir, f"{asset.id}.mp4")
+        proxy_dir = os.path.join(str(engine.cache_dir()), "opencut-proxies")
+        os.makedirs(proxy_dir, exist_ok=True)
+        out = os.path.join(proxy_dir, f"{asset.id}.mp4")
         worker = ProxyWorker(asset.id, asset.path, out)
         worker.signals.done.connect(self._proxy_done)
         self._pool.start(worker)
@@ -234,7 +412,6 @@ class MediaPanel(QWidget):
                 self._refresh_asset(asset)
 
     def _refresh_asset(self, asset: MediaAsset) -> None:
-        """Update the list item label/icon for an asset."""
         item = self._items.get(asset.id)
         if item:
             item.setText(self._asset_label(asset))

@@ -9,9 +9,14 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "      (without it, preview and export are disabled)"
 fi
 
-python3 -m venv .venv
+# Create or reuse virtual environment
+if [ ! -x .venv/bin/python ]; then
+  python3 -m venv .venv
+fi
+
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements-dev.txt
+
 echo
 echo "Setup complete.  Run:"
 echo "  .venv/bin/python main.py"

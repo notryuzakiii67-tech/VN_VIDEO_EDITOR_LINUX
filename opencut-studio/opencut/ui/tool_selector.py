@@ -10,11 +10,8 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFrame,
     QLabel,
-    QPushButton,
     QScrollArea,
-    QSizePolicy,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -91,7 +88,6 @@ class ToolSelector(QWidget):
         self._stack.setStyleSheet(f"background:{BG};")
         self._stack.setVisible(False)
 
-        # Create placeholder panels for each tool
         for name, _, label, tip in self.TOOLS:
             panel = self._create_tool_panel(name, label, tip)
             self._panels[name] = panel
@@ -101,17 +97,11 @@ class ToolSelector(QWidget):
 
     def _create_tool_panel(self, name: str, label: str,
                            tip: str) -> QWidget:
-        """Create an inspector panel for a tool.
-
-        Returns a scrollable panel with header and placeholder content.
-        The actual inspector content is injected later from main_window.
-        """
         outer = QWidget()
         vlay = QVBoxLayout(outer)
         vlay.setContentsMargins(8, 8, 8, 8)
         vlay.setSpacing(6)
 
-        # Header with close button
         hdr = QWidget()
         hdr.setStyleSheet(f"background:{PANEL}; border-radius:6px;")
         hlay = QVBoxLayout(hdr)
@@ -121,7 +111,6 @@ class ToolSelector(QWidget):
         hlay.addWidget(title)
         vlay.addWidget(hdr)
 
-        # Scrollable content area (populated by main_window)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("background:transparent; border:none;")
@@ -130,7 +119,6 @@ class ToolSelector(QWidget):
         scroll.setWidget(content)
         vlay.addWidget(scroll, 1)
 
-        # Store references for external population
         outer.setProperty("tool_name", name)
         outer.setProperty("content_widget", content)
         outer.setProperty("scroll_area", scroll)
@@ -138,7 +126,6 @@ class ToolSelector(QWidget):
 
     def _select_tool(self, name: str) -> None:
         if self._active_tool == name:
-            # Deselect
             self._active_tool = None
             self._stack.setVisible(False)
             for btn in self._buttons.values():
@@ -155,7 +142,6 @@ class ToolSelector(QWidget):
         self.tool_changed.emit(name)
 
     def get_content_widget(self, tool_name: str) -> Optional[QWidget]:
-        """Get the content widget for a tool panel (for external population)."""
         panel = self._panels.get(tool_name)
         if panel:
             return panel.property("content_widget")

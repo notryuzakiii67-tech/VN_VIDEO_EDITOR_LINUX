@@ -123,7 +123,8 @@ The roadmap lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 ```bash
 sudo apt update
 sudo apt install -y ffmpeg python3 python3-venv python3-pip \
-  libgl1 libegl1 libxkbcommon0 libdbus-1-3
+  libgl1 libegl1 libxkbcommon0 libdbus-1-3 \
+  libfontconfig1 libglib2.0-0 libasound2t64
 
 git clone <this-repository>
 cd VN_VIDEO_EDITOR_LINUX/opencut-studio
@@ -131,6 +132,9 @@ cd VN_VIDEO_EDITOR_LINUX/opencut-studio
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python main.py
+```
+
+> On older Ubuntu (before 24.04), replace `libasound2t64` with `libasound2`.
 ```
 
 > **Repository layout note.** OpenCut Studio currently lives inside the

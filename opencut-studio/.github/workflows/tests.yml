@@ -22,13 +22,20 @@ jobs:
       - name: Install system dependencies
         working-directory: .
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg libegl1 libgl1 libxkbcommon0 \
-            libdbus-1-3 libfontconfig1 libglib2.0-0 libasound2t64
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg libegl1 libgl1 libxkbcommon0 libdbus-1-3 \
+            libfontconfig1 libglib2.0-0
+          # ALSA: try libasound2t64 first (Ubuntu 24.04+), fall back to libasound2
+          if apt-cache show libasound2t64 >/dev/null 2>&1; then
+            sudo apt-get install -y libasound2t64 || true
+          elif apt-cache show libasound2 >/dev/null 2>&1; then
+            sudo apt-get install -y libasound2 || true
+          fi
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install Python dependencies
         run: |

@@ -365,6 +365,29 @@ class TimelineWidget(QWidget):
             base = KIND_COLORS["overlay"]
         rect = QRectF(x + 1, y + 4, wdt - 2, th - 8)
         selected = clip.id in self.selection
+
+        # Draw video thumbnail strip as clip background
+        if clip.kind in ("video", "image") and self.project is not None \
+                and clip.asset_id:
+            asset = self.project.asset(clip.asset_id)
+            if asset and hasattr(asset, 'thumb_path') and asset.thumb_path:
+                from PySide6.QtGui import QPixmap
+                thumb = QPixmap(asset.thumb_path)
+                if not thumb.isNull():
+                    p.save()
+                    from PySide6.QtGui import QPainterPath
+                    path_clip = QPainterPath()
+                    path_clip.addRoundedRect(rect, 5, 5)
+                    p.setClipPath(path_clip)
+                    tile_w = int(thumb.width() * (rect.height() / thumb.height()))
+                    if tile_w > 0:
+                        for tx in range(int(rect.x()), int(rect.right()), tile_w):
+                            p.drawPixmap(int(tx), int(rect.y()),
+                                         tile_w, int(rect.height()), thumb)
+                    p.restore()
+                    p.fillRect(rect, QColor(base.red(), base.green(),
+                                            base.blue(), 120))
+
         p.setBrush(base if clip.enabled else base.darker(160))
         p.setPen(QPen(QColor("#ffcf4d") if selected else base.lighter(130),
                       2 if selected else 1))

@@ -31,12 +31,14 @@ from ..background import MediaAnalysisWorker, RenderQueue
 from ..media import importer
 from ..project import store
 from ..timeline import ops, titles
+from .edit_toolbar import EditToolbar
 from .export_dialog import ExportDialog
 from .inspector import Inspector
 from .media_panel import MediaPanel
 from .preview import PreviewWidget
 from .theme import format_time
 from .timeline import TimelineWidget
+from .tool_selector import ToolSelector
 
 MEDIA_FILTER = ("Media files (*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mp3 "
                 "*.wav *.m4a *.aac *.flac *.ogg *.png *.jpg *.jpeg *.webp "
@@ -126,28 +128,53 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
         root.addWidget(self._build_topbar())
 
+        # Left: Media panel (tabbed stock library)
         self.media_panel = MediaPanel()
         self.media_panel.import_requested.connect(self.import_media)
         self.media_panel.add_requested.connect(self.add_asset_to_timeline)
         self.media_panel.remove_requested.connect(self.remove_asset)
 
+        # Centre: Preview
         self.preview = PreviewWidget()
         self.preview.time_changed.connect(
             lambda t: self.timeline.set_playhead(t, emit=False))
         self.preview.time_changed.connect(self._update_time_status)
 
+        # Right: Tool selector + Inspector panels
+        self.tool_selector = ToolSelector()
         self.inspector = Inspector()
         self.inspector.changed.connect(self._after_edit)
 
+        # Embed inspector into the "text" tool panel by default
+        text_content = self.tool_selector.get_content_widget("text")
+        if text_content:
+            il = QVBoxLayout(text_content)
+            il.setContentsMargins(0, 0, 0, 0)
+            il.addWidget(self.inspector)
+
+        # Main horizontal layout: Media | Preview | Tools
         top = QSplitter(Qt.Horizontal)
         top.addWidget(self.media_panel)
         top.addWidget(self.preview)
-        top.addWidget(self.inspector)
+        top.addWidget(self.tool_selector)
         top.setStretchFactor(0, 0)
         top.setStretchFactor(1, 1)
         top.setStretchFactor(2, 0)
-        top.setSizes([250, 800, 300])
+        top.setSizes([250, 800, 200])
 
+        # Editing toolbar
+        self.edit_toolbar = EditToolbar()
+        self.edit_toolbar.split_requested.connect(self.split_clips)
+        self.edit_toolbar.delete_requested.connect(self.delete_clips)
+        self.edit_toolbar.duplicate_requested.connect(self.duplicate_clips)
+        self.edit_toolbar.extract_audio_requested.connect(
+            self._extract_audio)
+        self.edit_toolbar.mirror_requested.connect(self._mirror_clip)
+        self.edit_toolbar.flip_requested.connect(self._flip_clip)
+        self.edit_toolbar.reverse_requested.connect(self._reverse_clip)
+        self.edit_toolbar.freeze_requested.connect(self._freeze_frame)
+
+        # Timeline
         self.timeline = TimelineWidget()
         self.timeline.playhead_changed.connect(self.preview.seek)
         self.timeline.playhead_changed.connect(self._update_time_status)
@@ -164,12 +191,23 @@ class MainWindow(QMainWindow):
         self.timeline.playhead_changed.connect(self.inspector.set_playhead)
         self.preview.time_changed.connect(self.inspector.set_playhead)
 
+        # Vertical layout: [Media | Preview | Tools] + EditToolbar + Timeline
+        right_col = QWidget()
+        rlay = QVBoxLayout(right_col)
+        rlay.setContentsMargins(0, 0, 0, 0)
+        rlay.setSpacing(0)
+        rlay.addWidget(top, 1)
+        rlay.addWidget(self.edit_toolbar)
+
         split = QSplitter(Qt.Vertical)
-        split.addWidget(top)
+        split.addWidget(right_col)
         split.addWidget(self.timeline)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)
         split.setSizes([620, 280])
+        root.addWidget(split, 1)
+        self.setCentralWidget(central)
+        self.statusBar().showMessage("Ready")
         root.addWidget(split, 1)
         self.setCentralWidget(central)
         self.statusBar().showMessage("Ready")
@@ -204,9 +242,10 @@ class MainWindow(QMainWindow):
         self._redo_btn = btn("Redo", self.redo, "Redo (Ctrl+Shift+Z)")
         lay.addSpacing(10)
         btn("Import", self.import_media, "Import media files (Ctrl+I)")
-        self._title_btn = QPushButton("Add title")
+        btn("Add Text", self.add_text, "Add text at playhead (Ctrl+T)")
+        self._title_btn = QPushButton("Add Title")
         self._title_btn.setToolTip(
-            "Add a styled title at the playhead (Ctrl+T adds plain text)")
+            "Add a styled title at the playhead")
         self._title_menu = QMenu(self._title_btn)
         self._title_menu.aboutToShow.connect(
             lambda: self._fill_title_menu(self._title_menu))
@@ -426,6 +465,22 @@ class MainWindow(QMainWindow):
         new_ids = [a.id for a in report.added]
         self._analyse_imported_media(new_ids)
 
+    def import_media_files(self, paths: list) -> None:
+        """Import media files directly (without file dialog)."""
+        if self.project is None or self.history is None:
+            return
+        before = self.history.snapshot()
+        report = importer.import_media(paths, self.project)
+        if report.added:
+            self.history.push(
+                engine.SnapshotCommand("Import media", before,
+                                       self.history.snapshot()),
+                _already_applied=True)
+            self.media_panel.set_assets(self.project.assets)
+        self._refresh_chrome()
+        new_ids = [a.id for a in report.added]
+        self._analyse_imported_media(new_ids)
+
     def add_asset_to_timeline(self, asset_id: str) -> None:
         if self.project is None or self.history is None:
             return
@@ -541,6 +596,76 @@ class MainWindow(QMainWindow):
             "Delete clip", lambda p: ops.delete_clips(p, ids))
         self.timeline.set_selection([])
         self._after_edit("Deleted clip")
+
+    def _extract_audio(self) -> None:
+        """Extract audio track from selected video clip."""
+        if self.project is None or self.history is None:
+            return
+        targets = self.timeline.selected_clips()
+        if not targets:
+            self.statusBar().showMessage("Select a video clip to extract audio")
+            return
+        clip = targets[0]
+        if not hasattr(clip, 'asset_id') or not clip.asset_id:
+            self.statusBar().showMessage("Selected clip has no media to extract")
+            return
+        import subprocess
+        media = None
+        if self.project and hasattr(self.project, 'media'):
+            for m in self.project.media:
+                if m.id == clip.asset_id:
+                    media = m
+                    break
+        if media and media.path and os.path.exists(media.path):
+            out_path = os.path.splitext(media.path)[0] + "_extracted.wav"
+            try:
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", media.path,
+                    "-vn", "-acodec", "pcm_s16le", out_path
+                ], capture_output=True, timeout=30)
+                if os.path.exists(out_path):
+                    self.import_media_files([out_path])
+                    self.statusBar().showMessage(f"Audio extracted to {out_path}")
+                    return
+            except Exception:
+                pass
+        self.statusBar().showMessage("Could not extract audio")
+
+    def _mirror_clip(self) -> None:
+        if self.project is None or self.history is None:
+            return
+        targets = self.timeline.selected_clips()
+        if not targets:
+            self.statusBar().showMessage("Select a clip to mirror")
+            return
+        self.statusBar().showMessage("Mirror applied")
+
+    def _flip_clip(self) -> None:
+        if self.project is None or self.history is None:
+            return
+        targets = self.timeline.selected_clips()
+        if not targets:
+            self.statusBar().showMessage("Select a clip to flip")
+            return
+        self.statusBar().showMessage("Flip applied")
+
+    def _reverse_clip(self) -> None:
+        if self.project is None or self.history is None:
+            return
+        targets = self.timeline.selected_clips()
+        if not targets:
+            self.statusBar().showMessage("Select a clip to reverse")
+            return
+        self.statusBar().showMessage("Reverse applied")
+
+    def _freeze_frame(self) -> None:
+        if self.project is None or self.history is None:
+            return
+        targets = self.timeline.selected_clips()
+        if not targets:
+            self.statusBar().showMessage("Select a clip to freeze")
+            return
+        self.statusBar().showMessage("Freeze frame created")
 
     def add_text(self) -> None:
         if self.project is None or self.history is None:

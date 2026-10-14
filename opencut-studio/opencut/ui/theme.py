@@ -1,18 +1,20 @@
 """OpenCut Studio's visual theme.
 
-An original, restrained dark theme: one accent colour, generous spacing,
-readable type.  Professional power underneath, simplicity on the surface.
+VN-inspired dark theme: deep dark backgrounds with pink/magenta accent,
+compact controls, generous spacing.  Professional power underneath,
+simplicity on the surface.  Designed for long editing sessions.
 """
 from __future__ import annotations
 
-ACCENT = "#4da3ff"
-ACCENT_DARK = "#2b6cb8"
-BG = "#1d2025"
-PANEL = "#262a31"
-PANEL_LIGHT = "#2f343d"
-BORDER = "#3a4049"
+ACCENT = "#ff3b6b"           # VN-inspired vibrant pink accent
+ACCENT_DARK = "#c42b52"
+ACCENT_LIGHT = "#ff6b8d"
+BG = "#0b0d11"               # Deep black (VN-style)
+PANEL = "#161920"            # Slightly lighter panels
+PANEL_LIGHT = "#1f2229"      # Input/button backgrounds
+BORDER = "#2a2d36"           # Subtle borders
 TEXT = "#e8eaed"
-TEXT_DIM = "#9aa3ad"
+TEXT_DIM = "#6b7080"
 DANGER = "#e5534b"
 OK = "#3fb950"
 
@@ -42,10 +44,11 @@ QToolButton {{
     padding: 5px;
 }}
 QToolButton:hover {{ background: {PANEL_LIGHT}; border-color: {BORDER}; }}
+QToolButton:checked {{ background: {ACCENT_DARK}; border-color: {ACCENT}; }}
 QToolButton:disabled {{ color: {TEXT_DIM}; }}
 
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    background: #171a1f; border: 1px solid {BORDER}; border-radius: 6px;
+    background: {BG}; border: 1px solid {BORDER}; border-radius: 6px;
     padding: 5px 8px; selection-background-color: {ACCENT_DARK};
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus,
@@ -57,7 +60,7 @@ QComboBox QAbstractItemView {{
 }}
 
 QListWidget {{
-    background: #171a1f; border: 1px solid {BORDER}; border-radius: 8px;
+    background: {BG}; border: 1px solid {BORDER}; border-radius: 8px;
     outline: none;
 }}
 QListWidget::item {{ padding: 4px; border-radius: 6px; }}
@@ -72,13 +75,13 @@ QSlider::handle:horizontal {{
 QSlider::sub-page:horizontal {{ background: {ACCENT_DARK}; border-radius: 2px; }}
 
 QProgressBar {{
-    background: #171a1f; border: 1px solid {BORDER}; border-radius: 6px;
+    background: {BG}; border: 1px solid {BORDER}; border-radius: 6px;
     text-align: center; height: 18px;
 }}
 QProgressBar::chunk {{ background: {ACCENT_DARK}; border-radius: 5px; }}
 
 QGroupBox {{
-    background: #22262d;
+    background: {PANEL};
     border: 1px solid {BORDER}; border-radius: 8px; margin-top: 10px;
     padding-top: 8px; font-weight: 600;
 }}
@@ -87,7 +90,7 @@ QScrollArea > QWidget > QWidget {{ background: transparent; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; }}
 QCheckBox::indicator, QRadioButton::indicator {{
     width: 16px; height: 16px; border-radius: 4px;
-    border: 1px solid {BORDER}; background: #171a1f;
+    border: 1px solid {BORDER}; background: {BG};
 }}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
     background: {ACCENT_DARK}; border-color: {ACCENT};
@@ -99,7 +102,7 @@ QToolTip {{
     padding: 4px 8px;
 }}
 QScrollBar:horizontal, QScrollBar:vertical {{
-    background: #171a1f; border: none; height: 10px; width: 10px;
+    background: {BG}; border: none; height: 10px; width: 10px;
 }}
 QScrollBar::handle:horizontal, QScrollBar::handle:vertical {{
     background: {BORDER}; border-radius: 5px; min-width: 30px; min-height: 30px;
@@ -118,15 +121,13 @@ def format_time(seconds: float) -> str:
 
 
 def apply_dark_palette(app) -> None:
-    """Set a dark QPalette so unstyled widgets (group boxes, scroll areas,
-    dialogs) match the stylesheet instead of falling back to a light
-    platform palette."""
+    """Set a dark QPalette so unstyled widgets match the stylesheet."""
     from PySide6.QtGui import QColor, QPalette
 
     pal = QPalette()
     pal.setColor(QPalette.Window, QColor(BG))
     pal.setColor(QPalette.WindowText, QColor(TEXT))
-    pal.setColor(QPalette.Base, QColor("#171a1f"))
+    pal.setColor(QPalette.Base, QColor(BG))
     pal.setColor(QPalette.AlternateBase, QColor(PANEL))
     pal.setColor(QPalette.Text, QColor(TEXT))
     pal.setColor(QPalette.BrightText, QColor("#ffffff"))
