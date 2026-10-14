@@ -64,15 +64,22 @@ audio-processed project exported and verified (RMS difference between
 plain and graded exports proves effects are applied in the render).
 See [PHASE4_REPORT.md](PHASE4_REPORT.md).
 
-## Phase 5 — AI tools, extensibility, open-source maturity (next)
+## Phase 5 — AI tools, extensibility, open-source maturity ✅ (v0.5.0)
 
-Documented plugin architecture (effects, transitions, titles, importers/
-exporters, optional AI hooks), contributor docs, project interchange
-investigation, optional local AI (transcription/subtitles, silence and
-scene detection, smart reframing) — always opt-in, local-first, never
-required for the core editor. Repository infrastructure (this repo
-already has: CONTRIBUTING, code of conduct, security policy, CI workflow,
-changelog) is completed and exercised by real contributions.
+Plugin architecture (`opencut/plugins.py`) with discovery, loading,
+error handling, and five typed plugin interfaces (Effect, Transition,
+Title, Importer, Exporter). Plugins are discovered from `plugins/`
+(bundled) and `~/.local/share/OpenCutStudio/plugins/` (user-installed).
+Every failure mode (import error, register failure, on_load failure,
+missing requirements, bad return type, missing name) is caught and
+logged, never crashes the app. Two bundled example plugins (warm effect,
+gaming title) plus test fixtures for failure modes. 31 plugin tests
+covering all loading and failure paths. Optional AI architecture
+documented (opt-in, local-first, never required, no media upload
+without consent). Repository maturity: PR template, issue templates
+(bug report, feature request), release checklist, updated SECURITY.md
+with plugin security guidance. All five phases complete. See
+[PHASE5_REPORT.md](PHASE5_REPORT.md).
 
 ## Explicitly not claimed until validated
 

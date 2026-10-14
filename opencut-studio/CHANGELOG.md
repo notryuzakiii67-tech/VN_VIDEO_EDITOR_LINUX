@@ -4,6 +4,32 @@ All notable changes to OpenCut Studio. Format follows
 [Keep a Changelog](https://keepachangelog.com); versions follow
 [Semantic Versioning](https://semver.org).
 
+## [0.5.0] — 2026-10-14 — Phase 5: plugin architecture, AI hooks, open-source maturity
+
+### Added
+- Plugin architecture (`opencut/plugins.py`): discover, load, and manage
+  plugins from `plugins/` (bundled) and user home directory. Five typed
+  plugin interfaces: `EffectPlugin`, `TransitionPlugin`, `TitlePlugin`,
+  `ImporterPlugin`, `ExporterPlugin`. Every failure mode (import error,
+  register failure, on_load failure, missing requirements, bad return
+  type, missing name, syntax error) is caught and logged, never crashes
+  the app.
+- Bundled example plugins: `example_warm.py` (effect), `example_title.py`
+  (title preset), plus test fixtures for failure handling.
+- Optional AI architecture documented: `AIHookPlugin` base class,
+  design principles (opt-in, local-first, never required, no media
+  upload without consent). Specific AI features (transcription, silence
+  detection, scene detection, smart reframing) investigated and
+  documented for future contributors.
+- Project interchange investigation documented: import via FFmpeg +
+  `ImporterPlugin`, export presets via `ExporterPlugin`, no current
+  support for Premiere/DaVinci/Final Cut project files.
+- Repository maturity: PR template, bug report and feature request
+  issue templates, release checklist, updated SECURITY.md with plugin
+  security guidance.
+- 31 new automated tests (`tests/test_phase5.py`); 177 OpenCut tests
+  total. All five development phases complete.
+
 ## [0.4.0] — 2026-10-14 — Phase 4: colour, compositing, effects, audio processing
 
 ### Added

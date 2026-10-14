@@ -24,6 +24,12 @@ OpenCut Studio is a local desktop editor. Relevant design points:
   executed.
 - **Your media is never modified.** Import references files by path;
   rendering writes only to the destination the user chooses.
+- **Plugins are sandboxed by design.** Plugins run in the same process
+  but are discovered from a controlled directory, their requirements
+  are checked before loading, and all failures are caught and logged.
+  A broken plugin never crashes the application or corrupts a project
+  file. Plugins that make network requests should document this
+  clearly and require explicit user opt-in.
 
 ## Supported versions
 

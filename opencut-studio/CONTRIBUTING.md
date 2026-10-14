@@ -47,6 +47,39 @@ bash scripts/dev_setup.sh        # venv + dev dependencies
   ran them.
 - Screenshots for UI changes are appreciated.
 
+## Writing plugins
+
+Plugins are Python modules in the `plugins/` directory. Each module must
+define a `register()` function that returns one or more `Plugin` instances:
+
+```python
+from opencut.plugins import EffectPlugin, PluginMeta
+
+class MyEffect(EffectPlugin):
+    meta = PluginMeta(name="my-effect", version="1.0.0")
+
+    def effect_kind(self):
+        return "my_effect"
+
+    def effect_label(self):
+        return "My Custom Effect"
+
+    def effect_params(self):
+        return [{"key": "strength", "label": "Strength",
+                 "default": 0.5, "lo": 0.0, "hi": 1.0, "step": 0.01}]
+
+    def build_filter(self, params, duration):
+        return [f"eq=brightness={params.get('strength', 0.5) - 0.5}"]
+
+def register():
+    return MyEffect()
+```
+
+Plugin types: `EffectPlugin`, `TransitionPlugin`, `TitlePlugin`,
+`ImporterPlugin`, `ExporterPlugin`. See `opencut/plugins.py` for the
+full API. Plugins must never crash the app — all failures are caught
+and logged.
+
 ## Reporting bugs
 
 Include your Ubuntu version, how FFmpeg is installed (`ffmpeg -version`),

@@ -7,4 +7,4 @@ See the LICENSE file in this repository.
 """
 
 APP_NAME = "OpenCut Studio"
-__version__ = "0.4.0"
+__version__ = "0.5.0"

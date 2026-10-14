@@ -13,7 +13,7 @@ OpenCut Studio takes inspiration from the *workflows* of editors like
 Premiere Pro, DaVinci Resolve, CapCut and VN — never their code, branding or
 assets. The interface is original, and so is every line of this project.
 
-## What works today (Phase 4, v0.4.0)
+## What works today (Phase 5, v0.5.0)
 
 - Native Ubuntu desktop app (Python + PySide6/Qt), dark, uncluttered UI:
   top bar, media library, preview, properties panel, multitrack timeline.
@@ -96,13 +96,27 @@ assets. The interface is original, and so is every line of this project.
   sliders, enable/disable, remove.
 - **Audio processing**: 3-band EQ, bass/treble boost, compressor,
   denoise, echo, reverb, highpass/lowpass, normalize — all undoable.
-- 146 automated tests, including 6 acceptance tests that verify
-  colour grading produces a measurable difference from a plain export.
-  See [docs/PHASE4_REPORT.md](docs/PHASE4_REPORT.md).
+- 146 tests through Phase 4. See [docs/PHASE4_REPORT.md](docs/PHASE4_REPORT.md).
 
-The five-phase roadmap lives in [docs/ROADMAP.md](docs/ROADMAP.md).
-What is *not* implemented yet is listed there honestly rather than
-implied.
+### New in Phase 5
+
+- **Plugin architecture** (`opencut/plugins.py`): discover, load, and
+  manage plugins from `plugins/` (bundled) or user home directory. Five
+  typed plugin interfaces: effect, transition, title, importer, exporter.
+  Every failure mode is caught and logged — broken plugins never crash
+  the app. Two bundled examples (warm effect, gaming title).
+- **Optional AI architecture** documented: opt-in, local-first, never
+  required, no media upload without consent. Specific features
+  (transcription, silence/scene detection, smart reframing) investigated
+  for future contributors.
+- **Repository maturity**: PR template, issue templates, release
+  checklist, updated security policy with plugin guidance.
+- 177 automated tests across all five phases.
+  See [docs/PHASE5_REPORT.md](docs/PHASE5_REPORT.md).
+
+**All five phases of the development plan are complete.**
+
+The roadmap lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Install on Ubuntu
 
@@ -149,7 +163,7 @@ uses as a fallback.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest        # 146 tests, incl. acceptance + regression
+.venv/bin/python -m pytest        # 177 tests, incl. all phases
 .venv/bin/python main.py --self-test
 ```
 
@@ -167,5 +181,5 @@ recorded in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
 ## Project documents
 
 - [Architecture](docs/ARCHITECTURE.md) · [Dependencies & licences](docs/DEPENDENCIES.md)
-- [Roadmap](docs/ROADMAP.md) · [Phase 1 report](docs/PHASE1_REPORT.md) · [Phase 2 report](docs/PHASE2_REPORT.md) · [Phase 3 report](docs/PHASE3_REPORT.md) · [Phase 4 report](docs/PHASE4_REPORT.md)
+- [Roadmap](docs/ROADMAP.md) · [Phase 1 report](docs/PHASE1_REPORT.md) · [Phase 2 report](docs/PHASE2_REPORT.md) · [Phase 3 report](docs/PHASE3_REPORT.md) · [Phase 4 report](docs/PHASE4_REPORT.md) · [Phase 5 report](docs/PHASE5_REPORT.md)
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
